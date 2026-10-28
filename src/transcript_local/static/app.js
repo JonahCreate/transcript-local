@@ -33,7 +33,7 @@ $('submit').onclick=protect(async()=>{
       const form=new FormData();form.append('file',file);form.append('model',$('model').value);form.append('language',$('language').value);form.append('enhance',$('enhance').checked);form.append('force',$('force').checked);
       try {await api('/jobs',{method:'POST',body:form});count++;} catch(e) {notify(`${file.name}：${e.message}`);}
     }
-    if(count){notify(`已加入 ${count} 個檔案；相同內容與設定的任務會沿用。`);setFiles([]);$('files').value='';}
+    if(count){notify($('force').checked ? `已建立 ${count} 個新版本。` : `已加入 ${count} 個檔案；相同內容與設定的任務會沿用。`);setFiles([]);$('files').value='';}
   } finally {state.busy=false;$('submit').textContent='加入轉錄佇列 →';updateSubmit();await refreshJobs();}
 });
 async function refreshStatus() {
