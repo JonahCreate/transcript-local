@@ -7,6 +7,7 @@ import subprocess
 import sys
 import wave
 from .store import Store, atomic_json, digest, read_json, now
+from .models import resolve_model
 
 
 def progress(path, **data):
@@ -57,7 +58,9 @@ def run(store, job_id):
                 chunks.append(saved)
             else:
                 if model is None:
-                    model = WhisperModel(str(store.models/job['model']), device='cpu', compute_type='int8', cpu_threads=4, local_files_only=True)
+                    resolved = resolve_model(store, job['model'], job['model_revision'])
+                    if not resolved: raise RuntimeError('原本使用的模型版本已不存在，請恢復該版本或建立新任務')
+                    model = WhisperModel(str(resolved['path']), device='cpu', compute_type='int8', cpu_threads=4, local_files_only=True)
                 progress(path, phase='transcribing', message=f'辨識片段 {index+1}/{len(ranges)}', total=len(ranges), completed=index)
                 wav.setpos(round(start*16000))
                 samples = np.frombuffer(wav.readframes(round((end-start)*16000)),dtype=np.int16).astype(np.float32)/32768

@@ -10,7 +10,7 @@ import time
 import shutil
 from pathlib import Path
 from .store import ACTIVE, atomic_json, clean_name, digest, now, read_json
-from .models import available
+from .models import resolve_model
 
 class Manager:
     def __init__(self, store):
@@ -36,9 +36,10 @@ class Manager:
         self.thread.start()
 
     def settings(self, model, language, enhance):
-        if not available(self.store,model):raise ValueError('請先下載所選模型')
+        resolved=resolve_model(self.store,model)
+        if not resolved:raise ValueError('請先下載所選模型')
         if language not in {'zh','en','auto'}:raise ValueError('不支援的語言設定')
-        return {'model':model,'model_revision':read_json(self.store.models/model/'installed.json')['revision'],
+        return {'model':model,'model_revision':resolved['revision'],
                 'language':language,'enhance':enhance,'prompts':self.store.glossary()['prompts'],'pipeline_version':1}
 
     def commit_source(self, staging, name, settings, force=False):
@@ -74,9 +75,8 @@ class Manager:
         with self.lock:
             job=self.store.get(job_id)
             if job['status'] not in {'failed','cancelled','interrupted'}:raise ValueError('這個任務無須續跑')
-            if not available(self.store,job['model']):raise ValueError('請先下載模型')
-            if read_json(self.store.models/job['model']/'installed.json')['revision']!=job['model_revision']:
-                raise ValueError('模型版本已變更，請保留原稿並建立新任務')
+            if not resolve_model(self.store,job['model'],job['model_revision']):
+                raise ValueError('原本使用的模型版本已不存在，請恢復該版本或保留原稿並建立新任務')
             job['status']='queued';job['error']=None;self.store.save(job)
             return job
 

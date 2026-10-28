@@ -41,8 +41,8 @@ async function refreshStatus() {
   $('setup-notice').hidden=s.models.some(m=>m.ready)&&s.ffmpeg;
   $('data-path').textContent=s.data_path;$('used-space').textContent=bytes(s.used_bytes);$('free-space').textContent=bytes(s.free_bytes);$('trash-space').textContent=bytes(s.trash_bytes);$('ffmpeg-status').textContent=s.ffmpeg?'已安裝':'缺少：brew install ffmpeg';
   $('models').replaceChildren(...s.models.map(m=>{
-    const card=el('section',undefined,'panel model-card');card.append(el('h3',m.name==='medium'?'Medium':'Small'),el('span',`下載約 ${bytes(m.estimated_bytes)}，實際依模型檔案而定`,'model-size'),el('p',m.name==='medium'?'建議從這裡開始。適合一般中文錄音，處理時間較長。':'較輕量，適合先確認流程與較短錄音；複雜內容可能需要更多校稿。'));
-    const active=s.download.name===m.name;card.append(el('p',m.ready?'已下載 · 可離線辨識':active&&s.download.status==='downloading'?'下載中，請保持程式開啟…':active&&s.download.status==='failed'?`下載失敗：${s.download.error}`:'尚未下載','model-status'));
+    const card=el('section',undefined,'panel model-card');card.append(el('h3',m.name==='medium'?'Medium':'Small'),el('span',m.ready?'已準備完成 · 可離線使用':`下載約 ${bytes(m.estimated_bytes)}，實際依模型檔案而定`,'model-size'),el('p',m.name==='medium'?'建議從這裡開始。適合一般中文錄音，處理時間較長。':'較輕量，適合先確認流程與較短錄音；複雜內容可能需要更多校稿。'));
+    const active=s.download.name===m.name;card.append(el('p',m.ready?(m.source==='cache'?'已下載 · 使用既有 Hugging Face 快取':'已下載 · 儲存在本工具模型資料夾'):active&&s.download.status==='downloading'?'下載中，請保持程式開啟…':active&&s.download.status==='failed'?`下載失敗：${s.download.error}`:'尚未下載','model-status'));
     const b=el('button',m.ready?'已準備完成':active&&s.download.status==='failed'?'重試下載':'下載模型','button '+(m.ready?'subtle':'primary'));b.disabled=m.ready||s.download.status==='downloading';
     b.onclick=protect(async()=>{if(!confirm(`下載 ${m.name} 模型（約 ${bytes(m.estimated_bytes)}）至：\n${m.path}\n\n模型由 Hugging Face 取得。錄音不會隨下載上傳。`))return;await api('/models/download',{method:'POST',body:{name:m.name}});await refreshStatus();});card.append(b);return card;
   }));updateSubmit();

@@ -5,6 +5,10 @@ import pytest
 from transcript_local.store import Store, atomic_json
 from transcript_local.models import REQUIRED
 
+@pytest.fixture(autouse=True)
+def isolated_huggingface_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv('HF_HUB_CACHE', str(tmp_path / 'hf-cache'))
+
 @pytest.fixture
 def store(tmp_path):
     s=Store(tmp_path/'data')

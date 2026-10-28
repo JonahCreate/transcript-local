@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from transcript_local.store import Store, atomic_json, clean_name, read_json, digest
-from transcript_local.models import Models, available, REQUIRED
+from transcript_local.models import Models, available, resolve_model, REQUIRED
 from transcript_local.manager import Manager
 from transcript_local.review import export, save_edits, preview
 from transcript_local.worker import run
@@ -173,3 +173,55 @@ def test_model_supports_both_vocabulary_formats(store):
     assert available(store,'small')
     (root/'vocabulary.json').unlink()
     assert not available(store,'small')
+
+
+def cached_model(root, name, revision):
+    from transcript_local.models import CATALOG
+    repo = root / ('models--' + CATALOG[name]['repo'].replace('/', '--'))
+    snapshot = repo / 'snapshots' / revision
+    snapshot.mkdir(parents=True)
+    for filename in (*REQUIRED, 'vocabulary.txt'):
+        (snapshot / filename).write_text('{}')
+    (repo / 'refs').mkdir(exist_ok=True)
+    (repo / 'refs' / 'main').write_text(revision)
+    return snapshot
+
+
+def test_existing_huggingface_cache_is_ready_without_copy_or_network(tmp_path, monkeypatch, wav):
+    cache = tmp_path / 'hf-cache'
+    monkeypatch.setenv('HF_HUB_CACHE', str(cache))
+    revision = 'a' * 40
+    snapshot = cached_model(cache, 'medium', revision)
+    store = Store(tmp_path / 'fresh')
+    model = resolve_model(store, 'medium')
+    assert model == {'path': snapshot, 'revision': revision, 'source': 'cache'}
+    assert Models(store).status()['models'][0]['ready']
+    assert not (store.models / 'medium').exists()
+    job = Manager(store).import_file(wav, model='medium')
+    assert job['model_revision'] == revision
+
+
+def test_cached_revision_pinned_during_resume(tmp_path, monkeypatch, wav):
+    cache = tmp_path / 'hf-cache'
+    monkeypatch.setenv('HF_HUB_CACHE', str(cache))
+    revision = 'b' * 40
+    cached_model(cache, 'small', revision)
+    store = Store(tmp_path / 'fresh')
+    manager = Manager(store)
+    job = manager.import_file(wav, model='small')
+    manager.cancel(job['id'])
+    local = store.models / 'small'; local.mkdir()
+    for filename in (*REQUIRED, 'vocabulary.json'): (local / filename).write_text('{}')
+    atomic_json(local / 'installed.json', {'revision': 'different-revision'})
+    assert resolve_model(store, 'small')['source'] == 'app'
+    assert resolve_model(store, 'small', revision)['source'] == 'cache'
+    assert manager.resume(job['id'])['status'] == 'queued'
+
+
+def test_incomplete_cache_is_not_reported_ready(tmp_path, monkeypatch):
+    cache = tmp_path / 'hf-cache'
+    monkeypatch.setenv('HF_HUB_CACHE', str(cache))
+    snapshot = cached_model(cache, 'medium', 'c' * 40)
+    (snapshot / 'model.bin').unlink()
+    store = Store(tmp_path / 'fresh')
+    assert not available(store, 'medium')

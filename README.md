@@ -28,7 +28,7 @@
 
 `setup.sh` 使用 uv 管理 Python 3.12 與鎖定依賴；不需要修改系統 Python，也不修改 shell 別名。`start.sh` 使用已安裝環境，不需要每次上網更新依賴。
 
-瀏覽器開啟後，到「環境與模型」選擇並下載模型。Medium 建議一般中文錄音使用；Small 較輕量。大小僅為估計，請以下載實際用量為準。下載來源為 Hugging Face 的 Systran faster-whisper 模型，模型與程式有各自授權。
+瀏覽器開啟後，到「環境與模型」確認模型。工具會自動辨識可用的 Hugging Face 模型快取；若模型尚未下載，再選擇並下載模型。Medium 建議一般中文錄音使用；Small 較輕量。大小僅為估計，請以下載實際用量為準。下載來源為 Hugging Face 的 Systran faster-whisper 模型，模型與程式有各自授權。
 
 ## 操作
 
@@ -74,12 +74,12 @@ CLI 預設把匯出存到任務的 `exports/`；可用 `--output-dir "/匯出目
 
 預設資料目錄：`~/Library/Application Support/transcript-local/`，與 repo 分開。
 
-- `models/`：明確下載的模型與版本紀錄。
+- `models/`：由本工具明確下載的模型與版本紀錄。既有 Hugging Face 快取可直接使用，不需複製。
 - `jobs/`：輸入檔副本、16 kHz 單聲道回聽 WAV、片段進度、錯誤紀錄與校稿 JSON。
 - `glossary.json`：個人提示與替換規則。
 - `trash/`：「清除」的任務，可手動還原；尚未永久刪除，所以仍占空間。
 
-網頁選檔會把副本串流傳給**同一台電腦**的服務，不送到雲端；單檔上限 20 GB。辨識僅讀本機模型，不自動下載。程式使用 CPU int8，第一版不做 Metal/GPU 加速。
+網頁選檔會把副本串流傳給**同一台電腦**的服務，不送到雲端；單檔上限 20 GB。辨識僅讀本機模型或既有 Hugging Face 快取，不自動下載；續跑時會使用任務原本的模型版本。程式使用 CPU int8，第一版不做 Metal/GPU 加速。
 
 服務只綁定 `127.0.0.1`，啟動連結含一次工作階段憑證，請勿分享。憑證交換成 HttpOnly、SameSite cookie 後，會從網址移除。程式不載入外部字型、分析追蹤或 CDN 資源。模型下載會連線 Hugging Face，但不附帶錄音。
 
