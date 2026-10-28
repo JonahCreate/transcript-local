@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+.env
+*.log
+dist/
+build/
+*.egg-info/
+# Recordings, models and transcripts never belong in the repository.
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.mov
+*.mkv
+*.bin
+*.safetensors
+*.srt
+local-data/
