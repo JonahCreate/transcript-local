@@ -15,6 +15,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .store import Store, atomic_json, clean_name, read_json
 from .manager import Manager
 from .models import Models
+from .updater import Updater
 from .review import FORMAT_NAMES, export, preview, save_edits
 
 class ModelChoice(BaseModel):
@@ -48,11 +49,12 @@ class Apply(BaseModel):
     ids: list[int]
 
 
-def create_app(store=None, token=None, manager=None):
+def create_app(store=None, token=None, manager=None, restart=None):
     store=store or Store()
     token=token or secrets.token_urlsafe(32)
     manager=manager or Manager(store)
     models=Models(store)
+    updater=Updater(manager,restart,models)
     edit_lock=threading.RLock()
     static=Path(__file__).parent/'static'
 
@@ -75,6 +77,8 @@ def create_app(store=None, token=None, manager=None):
                 return Response('不接受其他網站的請求',status_code=403)
             if request.headers.get('x-local-request')!='1':
                 return Response('缺少本機請求標記',status_code=403)
+        if request.url.path.startswith('/api/') and request.method not in {'GET','HEAD'} and manager.updating and request.url.path != '/api/update':
+            return Response('程式正在更新，請稍候',status_code=409)
         response=await call_next(request)
         response.headers['X-Content-Type-Options']='nosniff'
         response.headers['Referrer-Policy']='no-referrer'
@@ -118,6 +122,14 @@ def create_app(store=None, token=None, manager=None):
         return {'data_path':str(store.root),'used_bytes':store.usage(),'free_bytes':disk.free,
                 'trash_bytes':store.usage(store.root/'trash') if (store.root/'trash').exists() else 0,
                 'ffmpeg':bool(shutil.which('ffmpeg')),**models.status()}
+
+    @app.get('/api/update',dependencies=[Depends(auth)])
+    def update_status():return updater.status()
+
+    @app.post('/api/update',dependencies=[Depends(auth)],status_code=202)
+    def update_start():
+        updater.start()
+        return updater.status()
 
     @app.post('/api/models/download',dependencies=[Depends(auth)],status_code=202)
     def download(choice:ModelChoice):

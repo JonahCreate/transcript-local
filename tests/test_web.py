@@ -92,3 +92,45 @@ def test_audio_range_playback(client,store,wav):
     (store.job_dir(j['id'])/'audio.wav').write_bytes(wav.read_bytes())
     r=client.get(f'/api/jobs/{j["id"]}/audio',headers={'Range':'bytes=0-43'})
     assert r.status_code==206;assert len(r.content)==44
+
+def test_web_update_guards_tasks_and_restarts(client,store,wav,monkeypatch,tmp_path):
+    import threading
+    from types import SimpleNamespace
+    from transcript_local import updater as updater_module
+    project=tmp_path/'project';project.mkdir();(project/'update.sh').write_text('')
+    monkeypatch.setenv('TRANSCRIPT_LOCAL_PROJECT',str(project))
+    done=threading.Event()
+    monkeypatch.setattr(updater_module.subprocess,'run',lambda *a,**k:SimpleNamespace(returncode=0,stdout=''))
+    app=create_app(store,token='test-token',manager=IdleManager(store),restart=done.set)
+    with TestClient(app) as c:
+        c.headers.update({'Authorization':'Bearer test-token','X-Local-Request':'1'})
+        job=c.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
+        assert c.post('/api/update').status_code==409
+        assert c.post(f'/api/jobs/{job["id"]}/cancel').status_code==200
+        assert c.post('/api/update').status_code==202
+        assert done.wait(2)
+        assert c.get('/api/update').json()['status']=='complete'
+        assert c.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==409
+
+def test_web_update_reports_failure_and_unlocks(store,monkeypatch,tmp_path):
+    import threading
+    from types import SimpleNamespace
+    from transcript_local import updater as updater_module
+    project=tmp_path/'project';project.mkdir();(project/'update.sh').write_text('')
+    monkeypatch.setenv('TRANSCRIPT_LOCAL_PROJECT',str(project))
+    finished=threading.Event()
+    def failed(*args,**kwargs):
+        finished.set()
+        return SimpleNamespace(returncode=1,stdout='更新失敗：請檢查網路')
+    monkeypatch.setattr(updater_module.subprocess,'run',failed)
+    app=create_app(store,token='test-token',manager=IdleManager(store),restart=lambda:None)
+    with TestClient(app) as c:
+        c.headers.update({'Authorization':'Bearer test-token','X-Local-Request':'1'})
+        assert c.post('/api/update').status_code==202
+        assert finished.wait(2)
+        for _ in range(100):
+            result=c.get('/api/update').json()
+            if result['status']=='failed':break
+        assert result['status']=='failed'
+        assert '網路' in result['message']
+        assert c.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==200

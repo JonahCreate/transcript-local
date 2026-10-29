@@ -21,6 +21,7 @@ class Manager:
         self.current=None
         self.thread=None
         self.lease=None
+        self.updating=False
 
     def start(self):
         self.lease=(self.store.root/'instance.lock').open('a')
@@ -47,6 +48,7 @@ class Manager:
         checksum=digest(staging)
         signature=hashlib.sha256((checksum+json.dumps(settings,sort_keys=True)).encode()).hexdigest()
         with self.lock:
+            if self.updating:raise ValueError('程式正在更新，請稍候')
             if not force:
                 for existing in self.store.list():
                     if existing['signature']==signature:
@@ -73,6 +75,7 @@ class Manager:
 
     def resume(self, job_id):
         with self.lock:
+            if self.updating:raise ValueError('程式正在更新，請稍候')
             job=self.store.get(job_id)
             if job['status'] not in {'failed','cancelled','interrupted'}:raise ValueError('這個任務無須續跑')
             if not resolve_model(self.store,job['model'],job['model_revision']):

@@ -117,3 +117,20 @@ protect(init)();
 let polling=false;
 setInterval(async()=>{if(!state.authenticated||polling||document.hidden)return;polling=true;try{await refreshJobs();if(state.status?.download.status==='downloading')await refreshStatus();}catch(e){notify(e.message);state.authenticated=false;}finally{polling=false;}},2500);
 setInterval(()=>{if(state.authenticated&&!document.hidden)protect(refreshStatus)();},20000);
+
+$('update-button').onclick=protect(async()=>{
+  if(state.dirty){notify('請先儲存目前的修改，再更新。');return;}
+  const current=await api('/update');
+  if(!current.available){notify('請使用 start.sh 啟動，才能在網頁更新。');return;}
+  if(!confirm('更新需要網路，完成後程式會重新啟動。請確認其他視窗的修改都已儲存。繼續嗎？'))return;
+  await api('/update',{method:'POST'});
+  $('update-button').disabled=true; $('update-button').textContent='更新中…';
+  notify('正在更新，請保持程式開啟。');
+  const timer=setInterval(async()=>{
+    try {
+      const update=await api('/update');
+      if(update.status==='failed'){clearInterval(timer);$('update-button').disabled=false;$('update-button').textContent='↻ 更新程式';alert('更新失敗：\n'+update.message);}
+      else if(update.status==='complete'){clearInterval(timer);notify('更新完成，正在重新開啟網頁。');}
+    } catch {clearInterval(timer);notify('程式正在重新啟動，請稍候新網頁。');}
+  },1500);
+});

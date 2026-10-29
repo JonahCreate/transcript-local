@@ -1,4 +1,5 @@
 import argparse
+import os
 import platform
 import secrets
 import shutil
@@ -96,12 +97,19 @@ def main(argv=None):
     sock=socket.socket();sock.bind(('127.0.0.1',getattr(args,'port',0)));sock.listen(128)
     url=f'http://127.0.0.1:{sock.getsockname()[1]}/#session={token}'
     print('本機網頁（請勿分享此工作階段連結）：'+url,flush=True)
-    app=create_app(store,token)
+    restart_requested=threading.Event()
+    def restart():
+        restart_requested.set()
+        server.should_exit=True
+    app=create_app(store,token,restart=restart)
     if not getattr(args,'no_browser',False):
         threading.Timer(1,lambda:webbrowser.open(url)).start()
     server=uvicorn.Server(uvicorn.Config(app,log_level='warning',access_log=False))
     try:server.run(sockets=[sock])
     finally:sock.close()
+    if restart_requested.is_set():
+        start=Path(os.environ['TRANSCRIPT_LOCAL_PROJECT'])/'start.sh'
+        os.execv(str(start),[str(start),*sys.argv[1:]])
     return 0
 
 if __name__=='__main__':
