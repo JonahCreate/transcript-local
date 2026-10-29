@@ -62,12 +62,12 @@ async function refreshJobs() {
     item.append(buttons);return item;
   }));
 }
-function markDirty(){state.dirty=true;$('save').disabled=false;$('save-state').textContent='尚未儲存';}
+function markDirty(){state.dirty=true;$('save').disabled=false;$('save-state').textContent='尚未儲存';$('export-version').textContent='有未儲存修改；儲存後才能下載最新版。';}
 async function openJob(j){
   if(j.status!=='complete'){notify(j.error||j.progress?.message||'任務完成後即可校稿。');return;}
   if(state.dirty&&!confirm('尚有未儲存修改，確定離開這份稿件？'))return;
   const doc=await api(`/jobs/${j.id}/transcript`);state.current=j.id;state.doc=doc;state.dirty=false;
-  $('editor-empty').hidden=true;$('editor').hidden=false;$('recording-name').textContent=j.name;$('save-state').textContent='已載入';$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
+  $('editor-empty').hidden=true;$('editor').hidden=false;$('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
   renderSegments();$('exports').replaceChildren(...['md','txt','srt','json'].map(fmt=>{const a=el('a',fmt.toUpperCase());a.href=`/api/jobs/${j.id}/export/${fmt}`;a.download='';a.onclick=e=>{if(state.dirty){e.preventDefault();notify('請先儲存修改，再匯出。');}};return a;}));await refreshJobs();
 }
 function renderSegments(){
@@ -85,7 +85,7 @@ function filterSegments(){document.querySelectorAll('.segment').forEach(n=>n.hid
 $('only-pending').onchange=filterSegments;
 $('audio').ontimeupdate=()=>{const audio=$('audio');if(audio.dataset.end&&audio.currentTime>=Number(audio.dataset.end)){audio.pause();delete audio.dataset.end;}};
 $('audio').onerror=()=>notify('回聽音訊無法載入，請確認任務資料仍完整。');
-async function save(){if(!state.current||!state.dirty)return;const fields=[...$('segments').querySelectorAll('textarea, input')];fields.forEach(n=>n.disabled=true);$('save').disabled=true;try{const doc=await api(`/jobs/${state.current}/transcript`,{method:'PUT',body:{revision:state.doc.revision,segments:state.doc.segments.map(r=>({id:r.id,text:r.edited_text??r.traditional_text,reviewed:r.reviewed}))}});state.doc=doc;state.dirty=false;$('save-state').textContent='已儲存';notify('修改已儲存在本機。');}finally{fields.forEach(n=>n.disabled=false);$('save').disabled=!state.dirty;}}
+async function save(){if(!state.current||!state.dirty)return;const fields=[...$('segments').querySelectorAll('textarea, input')];fields.forEach(n=>n.disabled=true);$('save').disabled=true;try{const doc=await api(`/jobs/${state.current}/transcript`,{method:'PUT',body:{revision:state.doc.revision,segments:state.doc.segments.map(r=>({id:r.id,text:r.edited_text??r.traditional_text,reviewed:r.reviewed}))}});state.doc=doc;state.dirty=false;renderSegments();$('save-state').textContent=`已儲存第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;notify(`第 ${doc.revision} 版已儲存在本機。`);}finally{fields.forEach(n=>n.disabled=false);$('save').disabled=!state.dirty;}}
 $('save').onclick=protect(save);
 $('save-glossary').onclick=protect(async()=>{
   const prompts=$('prompts').value.split('\n').map(s=>s.trim()).filter(Boolean);const rules=[];
@@ -103,7 +103,7 @@ $('close-preview').onclick=()=>$('preview-dialog').close();
 $('apply-preview').onclick=protect(async()=>{
   const ids=Array.from($('preview-list').querySelectorAll('input:checked')).map(n=>Number(n.dataset.id));
   if(!ids.length){notify('請至少勾選一個片段。');return;}
-  state.doc=await api(`/jobs/${state.current}/apply`,{method:'POST',body:{revision:state.preview.revision,glossary_hash:state.preview.glossary_hash,ids}});$('preview-dialog').close();renderSegments();$('save-state').textContent='已套用並儲存';notify(`已修改 ${ids.length} 個片段，原始辨識保留。`);
+  state.doc=await api(`/jobs/${state.current}/apply`,{method:'POST',body:{revision:state.preview.revision,glossary_hash:state.preview.glossary_hash,ids}});$('preview-dialog').close();renderSegments();$('save-state').textContent=`已儲存第 ${state.doc.revision} 版`;$('export-version').textContent=`下載第 ${state.doc.revision} 版；檔名會包含錄音名稱與版本。`;notify(`已修改 ${ids.length} 個片段，原始辨識保留。`);
 });
 window.addEventListener('beforeunload',e=>{if(state.dirty){e.preventDefault();e.returnValue='';}});
 async function init(){

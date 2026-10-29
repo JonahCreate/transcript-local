@@ -178,9 +178,13 @@ def create_app(store=None, token=None, manager=None):
 
     @app.get('/api/jobs/{job_id}/export/{fmt}',dependencies=[Depends(auth)])
     def download_export(job_id:str,fmt:Literal['md','txt','srt','json']):
-        content=export(job(job_id),doc(job_id),fmt)
+        current_job=job(job_id)
+        current_doc=doc(job_id)
+        content=export(current_job,current_doc,fmt)
+        source_name=Path(current_job['name']).stem.replace(':','：')[:60].rstrip(' .')
+        filename=f'{source_name}－第{current_doc["revision"]}版－{FORMAT_NAMES[fmt]}'
         return Response(content,media_type='application/json' if fmt=='json' else 'text/plain; charset=utf-8',
-                        headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(FORMAT_NAMES[fmt])})
+                        headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(filename)})
 
     @app.get('/api/glossary',dependencies=[Depends(auth)])
     def glossary():return store.glossary()

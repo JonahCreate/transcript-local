@@ -55,6 +55,23 @@ def test_edit_preview_apply_export_and_conflict(client,store,wav,document):
     assert read_json(path)['segments'][0]['raw_text']=='供钞'
     assert client.put(url+'/transcript',json={'revision':1,'segments':[]}).status_code==409
 
+def test_repeated_edits_export_current_revision_with_distinct_filename(client,store,wav,document):
+    job=client.post('/api/jobs',files={'file':('我的 錄音.wav',wav.read_bytes())}).json()
+    atomic_json(store.job_dir(job['id'])/'transcript.json',document)
+    url=f'/api/jobs/{job["id"]}'
+    first=client.put(url+'/transcript',json={'revision':1,'segments':[{'id':0,'text':'第一次修改','reviewed':True}]})
+    assert first.status_code==200
+    old_export=client.get(url+'/export/md')
+    assert '第一次修改' in old_export.text
+    second=client.put(url+'/transcript',json={'revision':2,'segments':[{'id':0,'text':'第二次修改','reviewed':True}]})
+    assert second.status_code==200
+    new_export=client.get(url+'/export/md')
+    assert '第二次修改' in new_export.text
+    assert '第一次修改' not in new_export.text
+    assert old_export.headers['content-disposition'] != new_export.headers['content-disposition']
+    assert '%E6%88%91%E7%9A%84' in new_export.headers['content-disposition']
+    assert '%E7%AC%AC3%E7%89%88' in new_export.headers['content-disposition']
+
 def test_no_path_read_endpoint(client):
     assert client.get('/api/files?path=/etc/passwd').status_code==404
     assert client.get('/api/jobs/not-an-id/audio').status_code==400
