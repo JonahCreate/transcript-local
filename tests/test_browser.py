@@ -113,4 +113,4 @@ def test_browser_restores_long_review_scroll(review_page,store,browser_job):
     wait_for(lambda:read_json(store.root/'preferences.json',{}).get('segment_position',0)>500)
     page.reload()
     expect(page.locator('#segments textarea')).to_have_count(45)
-    page.wait_for_function('document.getElementById("segments").scrollTop>500')
+    wait_for(lambda:page.locator('#segments').evaluate('(node)=>node.scrollTop')>500)
