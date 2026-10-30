@@ -20,4 +20,5 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ffmpeg
       - run: uv sync --frozen --no-editable --extra test --python 3.12
+      - run: .venv/bin/playwright install chromium --with-deps
       - run: .venv/bin/pytest

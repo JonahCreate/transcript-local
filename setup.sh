@@ -15,4 +15,5 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 uv sync --frozen --no-editable --reinstall-package transcript-local --python 3.12
 .venv/bin/transcript-local doctor
-echo '安裝完成。執行 ./start.sh，首次使用請在網頁選擇並下載模型。'
+.venv/bin/python -m transcript_local.install_commands --project "$PWD"
+echo '安裝完成。重新開啟終端機後輸入 tr，或執行 ./start.sh 開啟操作選單。'

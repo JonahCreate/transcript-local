@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import hashlib
+import os
+import re
 import json
 from pathlib import Path
 import secrets
@@ -12,7 +14,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from .store import Store, atomic_json, clean_name, read_json
+from .store import Store, atomic_json, clean_name, read_json, now
+from . import __version__
 from .manager import Manager
 from .models import Models
 from .updater import Updater
@@ -29,6 +32,18 @@ class Edit(BaseModel):
 class Edits(BaseModel):
     revision: int
     segments: list[Edit] = Field(max_length=50000)
+
+class Draft(BaseModel):
+    window_id: str = Field(pattern=r'^[a-zA-Z0-9-]{1,64}$')
+    base_revision: int
+    segments: list[Edit] = Field(max_length=50000)
+    position: float = Field(default=0,ge=0,le=10000000)
+    segment_position: float = Field(default=0,ge=0,le=10000000)
+
+class Preferences(BaseModel):
+    job_id: str | None = None
+    position: float = Field(default=0,ge=0,le=10000000)
+    segment_position: float = Field(default=0,ge=0,le=10000000)
 
 class Rule(BaseModel):
     source: str = Field(alias='from', min_length=1, max_length=200)
@@ -49,22 +64,28 @@ class Apply(BaseModel):
     ids: list[int]
 
 
-def create_app(store=None, token=None, manager=None, restart=None):
+def create_app(store=None, token=None, manager=None, restart=None, on_ready=None, on_stop=None, instance_id=None):
     store=store or Store()
     token=token or secrets.token_urlsafe(32)
     manager=manager or Manager(store)
     models=Models(store)
     updater=Updater(manager,restart,models)
+    instance_id=instance_id or secrets.token_hex(16)
+    cookie_name='iht_session_'+hashlib.sha256(str(store.root).encode()).hexdigest()[:12]
     edit_lock=threading.RLock()
     static=Path(__file__).parent/'static'
 
     @asynccontextmanager
     async def lifespan(app):
         manager.start()
-        yield
-        manager.close()
+        app.state.ready=True
+        if on_ready:on_ready()
+        try:yield
+        finally:
+            app.state.ready=False
+            manager.close()
 
-    app=FastAPI(title='Transcript Local', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app=FastAPI(title='I Hate Transcription', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=['127.0.0.1','localhost','testserver'])
     app.state.token=token
     app.state.manager=manager
@@ -77,7 +98,7 @@ def create_app(store=None, token=None, manager=None, restart=None):
                 return Response('不接受其他網站的請求',status_code=403)
             if request.headers.get('x-local-request')!='1':
                 return Response('缺少本機請求標記',status_code=403)
-        if request.url.path.startswith('/api/') and request.method not in {'GET','HEAD'} and manager.updating and request.url.path != '/api/update':
+        if request.url.path.startswith('/api/') and request.method not in {'GET','HEAD'} and manager.updating and request.url.path not in {'/api/update','/api/update/unlock'} and not request.url.path.endswith('/draft'):
             return Response('程式正在更新，請稍候',status_code=409)
         response=await call_next(request)
         response.headers['X-Content-Type-Options']='nosniff'
@@ -87,7 +108,7 @@ def create_app(store=None, token=None, manager=None, restart=None):
         return response
 
     def auth(request:Request):
-        supplied=request.headers.get('authorization','').removeprefix('Bearer ') or request.cookies.get('tl_session','')
+        supplied=request.headers.get('authorization','').removeprefix('Bearer ') or request.cookies.get(cookie_name,'')
         if not secrets.compare_digest(supplied,token):raise HTTPException(401,'工作階段已結束，請使用啟動時的連結重新開啟')
 
     def job(job_id):
@@ -113,8 +134,25 @@ def create_app(store=None, token=None, manager=None, restart=None):
     @app.post('/api/session',dependencies=[Depends(auth)])
     def session():
         response=Response(status_code=204)
-        response.set_cookie('tl_session',token,httponly=True,samesite='strict')
+        response.set_cookie(cookie_name,token,httponly=True,samesite='strict')
         return response
+
+    @app.get('/api/health',dependencies=[Depends(auth)])
+    def health():
+        return {'version':__version__,'instance_id':instance_id,'data_path':str(store.root),'ready':getattr(app.state,'ready',False),'revision':os.environ.get('IHT_REVISION','installed')}
+
+    @app.post('/api/service/stop',dependencies=[Depends(auth)],status_code=202)
+    def stop_service():
+        if not on_stop:raise ValueError('此服務無法透過網頁停止')
+        threading.Timer(.3,on_stop).start()
+        return {'message':'正在停止服務，完成片段會保留。'}
+
+    @app.post('/api/update/unlock',dependencies=[Depends(auth)])
+    def unlock_update(payload:dict):
+        secret=read_json(store.root/'runtime/supervisor.json',{}).get('secret','')
+        if not secret or not secrets.compare_digest(secret,str(payload.get('secret',''))):raise HTTPException(403,'僅管理程序可解鎖')
+        manager.updating=False
+        return {'ok':True}
 
     @app.get('/api/status',dependencies=[Depends(auth)])
     def status():
@@ -126,14 +164,19 @@ def create_app(store=None, token=None, manager=None, restart=None):
     @app.get('/api/update',dependencies=[Depends(auth)])
     def update_status():return updater.status()
 
+    def writable():
+        if manager.updating:raise ValueError('程式正在更新，請稍候')
+
     @app.post('/api/update',dependencies=[Depends(auth)],status_code=202)
     def update_start():
-        updater.start()
+        with edit_lock:updater.start()
         return updater.status()
 
     @app.post('/api/models/download',dependencies=[Depends(auth)],status_code=202)
     def download(choice:ModelChoice):
-        models.download(choice.name)
+        with manager.lock:
+            writable()
+            models.download(choice.name)
         return models.status()
 
     @app.get('/api/jobs',dependencies=[Depends(auth)])
@@ -179,7 +222,42 @@ def create_app(store=None, token=None, manager=None, restart=None):
     @app.put('/api/jobs/{job_id}/transcript',dependencies=[Depends(auth)])
     def edit(job_id:str, payload:Edits):
         job(job_id)
-        with edit_lock:return save_edits(store.job_dir(job_id)/'transcript.json',payload.model_dump())
+        with edit_lock:
+            writable()
+            return save_edits(store.job_dir(job_id)/'transcript.json',payload.model_dump())
+
+    @app.get('/api/jobs/{job_id}/drafts',dependencies=[Depends(auth)])
+    def drafts(job_id:str):
+        job(job_id)
+        return sorted([read_json(p) for p in (store.job_dir(job_id)/'drafts').glob('*.json')],key=lambda x:x['saved_at'],reverse=True)
+
+    @app.put('/api/jobs/{job_id}/draft',dependencies=[Depends(auth)])
+    def draft_save(job_id:str,payload:Draft):
+        with edit_lock:
+            data=doc(job_id)
+            ids={r['id'] for r in data['segments']}
+            if any(r.id not in ids for r in payload.segments):raise ValueError('草稿包含不存在的片段')
+            value={**payload.model_dump(),'saved_at':now()}
+            atomic_json(store.job_dir(job_id)/'drafts'/(payload.window_id+'.json'),value)
+            return value
+
+    @app.delete('/api/jobs/{job_id}/drafts/{window_id}',dependencies=[Depends(auth)])
+    def draft_clear(job_id:str,window_id:str):
+        job(job_id)
+        if not re.fullmatch(r'[a-zA-Z0-9-]{1,64}',window_id):raise ValueError('無效的草稿編號')
+        with edit_lock:(store.job_dir(job_id)/'drafts'/(window_id+'.json')).unlink(missing_ok=True)
+        return {'ok':True}
+
+    @app.get('/api/preferences',dependencies=[Depends(auth)])
+    def preferences():return read_json(store.root/'preferences.json',{})
+
+    @app.put('/api/preferences',dependencies=[Depends(auth)])
+    def preferences_save(payload:Preferences):
+        if payload.job_id:job(payload.job_id)
+        with edit_lock:
+            writable()
+            atomic_json(store.root/'preferences.json',payload.model_dump())
+        return payload.model_dump()
 
     @app.get('/api/jobs/{job_id}/audio',dependencies=[Depends(auth)])
     def audio(job_id:str):
@@ -189,9 +267,10 @@ def create_app(store=None, token=None, manager=None, restart=None):
         return FileResponse(path,media_type='audio/wav')
 
     @app.get('/api/jobs/{job_id}/export/{fmt}',dependencies=[Depends(auth)])
-    def download_export(job_id:str,fmt:Literal['md','txt','srt','json']):
+    def download_export(job_id:str,fmt:Literal['md','txt','srt','json'],revision:int|None=None):
         current_job=job(job_id)
         current_doc=doc(job_id)
+        if revision is not None and current_doc['revision']!=revision:raise ValueError('稿件版本已變更，請重新載入後匯出。')
         content=export(current_job,current_doc,fmt)
         source_name=Path(current_job['name']).stem.replace(':','：')[:60].rstrip(' .')
         filename=f'{source_name}－第{current_doc["revision"]}版－{FORMAT_NAMES[fmt]}'
@@ -204,6 +283,7 @@ def create_app(store=None, token=None, manager=None, restart=None):
     @app.put('/api/glossary',dependencies=[Depends(auth)])
     def glossary_save(payload:Glossary):
         with edit_lock:
+            writable()
             value=payload.model_dump(by_alias=True)
             atomic_json(store.root/'glossary.json',value)
             return value
@@ -219,6 +299,7 @@ def create_app(store=None, token=None, manager=None, restart=None):
     @app.post('/api/jobs/{job_id}/apply',dependencies=[Depends(auth)])
     def apply(job_id:str, payload:Apply):
         with edit_lock:
+            writable()
             data=doc(job_id);g=store.glossary()
             if data['revision']!=payload.revision or glossary_hash(g)!=payload.glossary_hash:raise ValueError('文字或詞彙表已變動，請重新預覽')
             changes={r['id']:r for r in preview(data,g['rules'])}

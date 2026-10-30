@@ -93,44 +93,53 @@ def test_audio_range_playback(client,store,wav):
     r=client.get(f'/api/jobs/{j["id"]}/audio',headers={'Range':'bytes=0-43'})
     assert r.status_code==206;assert len(r.content)==44
 
-def test_web_update_guards_tasks_and_restarts(client,store,wav,monkeypatch,tmp_path):
-    import threading
-    from types import SimpleNamespace
-    from transcript_local import updater as updater_module
-    project=tmp_path/'project';project.mkdir();(project/'update.sh').write_text('')
-    monkeypatch.setenv('TRANSCRIPT_LOCAL_PROJECT',str(project))
-    done=threading.Event()
-    monkeypatch.setattr(updater_module.subprocess,'run',lambda *a,**k:SimpleNamespace(returncode=0,stdout=''))
-    app=create_app(store,token='test-token',manager=IdleManager(store),restart=done.set)
-    with TestClient(app) as c:
-        c.headers.update({'Authorization':'Bearer test-token','X-Local-Request':'1'})
-        job=c.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
-        assert c.post('/api/update').status_code==409
-        assert c.post(f'/api/jobs/{job["id"]}/cancel').status_code==200
-        assert c.post('/api/update').status_code==202
-        assert done.wait(2)
-        assert c.get('/api/update').json()['status']=='complete'
-        assert c.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==409
+def test_managed_update_request_guards_and_unlock(client,store,wav,monkeypatch):
+    monkeypatch.setenv('IHT_MANAGED','1')
+    atomic_json(store.root/'runtime/supervisor.json',{'secret':'supervisor-secret'})
+    job=client.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
+    assert client.post('/api/update').status_code==409
+    client.post(f'/api/jobs/{job["id"]}/cancel')
+    assert client.post('/api/update').status_code==202
+    assert read_json(store.root/'runtime/update-request.json')['secret']=='supervisor-secret'
+    assert client.post('/api/update').status_code==409
+    assert client.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==409
+    assert client.post('/api/update/unlock',json={'secret':'wrong'}).status_code==403
+    atomic_json(store.root/'runtime/update.json',{'status':'failed','message':'offline'})
+    assert client.post('/api/update/unlock',json={'secret':'supervisor-secret'}).status_code==200
+    assert client.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==200
 
-def test_web_update_reports_failure_and_unlocks(store,monkeypatch,tmp_path):
+
+def test_foreground_cannot_update_live_environment(client):
+    assert not client.get('/api/update').json()['available']
+    assert client.post('/api/update').status_code==409
+
+
+def test_drafts_are_separate_and_version_checked_export(client,store,wav,document):
+    job=client.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
+    path=store.job_dir(job['id'])/'transcript.json';atomic_json(path,document)
+    base=f'/api/jobs/{job["id"]}'
+    draft={'window_id':'first-tab','base_revision':1,'position':200,'segments':[{'id':0,'text':'草稿文字','reviewed':True}]}
+    assert client.put(base+'/draft',json=draft).status_code==200
+    assert read_json(path)==document
+    assert client.get(base+'/drafts').json()[0]['segments'][0]['text']=='草稿文字'
+    assert client.put(base+'/transcript',json={'revision':1,'segments':draft['segments']}).status_code==200
+    assert client.get(base+'/export/txt?revision=1').status_code==409
+    assert '草稿文字' in client.get(base+'/export/txt?revision=2').text
+    assert client.get(base+'/drafts').json()[0]['base_revision']==1
+    assert client.put('/api/preferences',json={'job_id':job['id'],'position':200}).status_code==200
+    assert client.get('/api/preferences').json()['position']==200
+    assert client.delete(base+'/drafts/first-tab').status_code==200
+    assert client.get(base+'/drafts').json()==[]
+    draft['window_id']='../other'
+    assert client.put(base+'/draft',json=draft).status_code==422
+
+
+def test_health_authenticated_and_shutdown(store):
     import threading
-    from types import SimpleNamespace
-    from transcript_local import updater as updater_module
-    project=tmp_path/'project';project.mkdir();(project/'update.sh').write_text('')
-    monkeypatch.setenv('TRANSCRIPT_LOCAL_PROJECT',str(project))
-    finished=threading.Event()
-    def failed(*args,**kwargs):
-        finished.set()
-        return SimpleNamespace(returncode=1,stdout='更新失敗：請檢查網路')
-    monkeypatch.setattr(updater_module.subprocess,'run',failed)
-    app=create_app(store,token='test-token',manager=IdleManager(store),restart=lambda:None)
-    with TestClient(app) as c:
+    done=threading.Event()
+    with TestClient(create_app(store,token='test-token',manager=IdleManager(store),on_stop=done.set)) as c:
+        assert c.get('/api/health').status_code==401
         c.headers.update({'Authorization':'Bearer test-token','X-Local-Request':'1'})
-        assert c.post('/api/update').status_code==202
-        assert finished.wait(2)
-        for _ in range(100):
-            result=c.get('/api/update').json()
-            if result['status']=='failed':break
-        assert result['status']=='failed'
-        assert '網路' in result['message']
-        assert c.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==200
+        assert c.get('/api/health').json()['ready']
+        assert c.post('/api/service/stop').status_code==202
+        assert done.wait(2)

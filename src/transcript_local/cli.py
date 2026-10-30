@@ -16,9 +16,14 @@ from .review import export, FORMAT_NAMES
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description='本機逐字稿與人工校閱；不需 API key。預設開啟網頁。')
+    parser=argparse.ArgumentParser(description='I Hate Transcription — Less typing. More living.')
     parser.add_argument('--data-dir',type=Path,help='指定獨立資料目錄（預設 Application Support）')
     sub=parser.add_subparsers(dest='command')
+    sub.add_parser('menu',help='互動操作選單')
+    sub.add_parser('open',help='開啟背景服務工作台')
+    sub.add_parser('update',help='透過獨立管理程序安全更新')
+    stop_parser=sub.add_parser('stop',help='停止背景服務')
+    stop_parser.add_argument('--force',action='store_true')
     serve=sub.add_parser('serve',help='開啟本機網頁')
     serve.add_argument('--no-browser',action='store_true')
     serve.add_argument('--port',type=int,default=0,help='預設自動選擇可用連接埠')
@@ -35,6 +40,19 @@ def main(argv=None):
     trans.add_argument('--output-dir',type=Path,help='另外匯出到此目錄，各任務獨立子資料夾')
     args=parser.parse_args(argv)
     store=Store(args.data_dir)
+    if args.command in {None,'menu'}:
+        from .menu import menu
+        return menu(store)
+    if args.command=='open':
+        from .service import ensure
+        ensure(store);print('已開啟工作台。');return 0
+    if args.command=='update':
+        from .service import ensure, request
+        request(ensure(store,False),'/api/update',{})
+        print('更新已開始；請從選單開啟工作台查看進度。');return 0
+    if args.command=='stop':
+        from .service import stop
+        print(stop(store,args.force));return 0
     if args.command=='doctor':
         good=platform.system()=='Darwin' and platform.machine()=='arm64'
         print('正式支援平台：'+('符合' if good else '未驗證；正式支援 Apple Silicon Mac'))
@@ -93,23 +111,31 @@ def main(argv=None):
         finally:manager.close()
     import uvicorn
     from .web import create_app
-    token=secrets.token_urlsafe(32)
-    sock=socket.socket();sock.bind(('127.0.0.1',getattr(args,'port',0)));sock.listen(128)
+    from .service import healthy, busy_lease, runtime
+    existing=healthy(store)
+    if existing:
+        if not getattr(args,'no_browser',False):webbrowser.open(f'http://127.0.0.1:{existing["port"]}/#session={existing["token"]}')
+        print('服務已啟動；請使用 tr 選單管理。');return 0
+    if busy_lease(store):raise RuntimeError('另一個舊服務仍在使用資料。請先儲存修改並停止原服務。')
+    token=os.environ.get('IHT_SERVICE_TOKEN') if os.environ.get('IHT_MANAGED')=='1' else None
+    token=token or secrets.token_urlsafe(32)
+    instance=secrets.token_hex(16)
+    port=int(os.environ.get('IHT_SERVICE_PORT','0')) if os.environ.get('IHT_MANAGED')=='1' else getattr(args,'port',0)
+    sock=socket.socket();sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);sock.bind(('127.0.0.1',port));sock.listen(128)
     url=f'http://127.0.0.1:{sock.getsockname()[1]}/#session={token}'
-    print('本機網頁（請勿分享此工作階段連結）：'+url,flush=True)
-    restart_requested=threading.Event()
-    def restart():
-        restart_requested.set()
+    info={'port':sock.getsockname()[1],'token':token,'instance_id':instance,'pid':os.getpid()}
+    rt=runtime(store)
+    def ready():
+        atomic_json(rt/'service.json',info)
+        if os.environ.get('IHT_MANAGED')!='1':print('本機網頁（請勿分享工作階段連結）：'+url,flush=True)
+        if not getattr(args,'no_browser',False):webbrowser.open(url)
+    def shutdown():
+        atomic_json(rt/'exit-intent.json',{'instance_id':instance})
         server.should_exit=True
-    app=create_app(store,token,restart=restart)
-    if not getattr(args,'no_browser',False):
-        threading.Timer(1,lambda:webbrowser.open(url)).start()
+    app=create_app(store,token,on_ready=ready,on_stop=shutdown,instance_id=instance)
     server=uvicorn.Server(uvicorn.Config(app,log_level='warning',access_log=False))
     try:server.run(sockets=[sock])
     finally:sock.close()
-    if restart_requested.is_set():
-        start=Path(os.environ['TRANSCRIPT_LOCAL_PROJECT'])/'start.sh'
-        os.execv(str(start),[str(start),*sys.argv[1:]])
     return 0
 
 if __name__=='__main__':

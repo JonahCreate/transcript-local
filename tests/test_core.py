@@ -231,3 +231,29 @@ def test_incomplete_cache_is_not_reported_ready(tmp_path, monkeypatch):
     (snapshot / 'model.bin').unlink()
     store = Store(tmp_path / 'fresh')
     assert not available(store, 'medium')
+
+
+def test_worker_temporary_start_failure_retries_only_once(store,wav,monkeypatch):
+    import transcript_local.manager as module
+    real=subprocess.Popen
+    def failed_worker(command,**kwargs):
+        return real([sys.executable,'-c',"import sys;sys.stderr.write('Fatal Python error: init_sys_streams: Bad file descriptor');sys.exit(1)"],**kwargs)
+    monkeypatch.setattr(module.subprocess,'Popen',failed_worker)
+    m=Manager(store);m.start();job=m.import_file(wav,model='small')
+    try:
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            current=store.get(job['id'])
+            if current['status']=='failed':break
+            time.sleep(.05)
+        assert current['status']=='failed'
+        assert current['recovery_attempts']==1
+    finally:m.close()
+
+
+def test_crash_recovery_never_resumes_cancelled_task(store,wav,monkeypatch):
+    manager=Manager(store);job=manager.import_file(wav,model='small');manager.cancel(job['id'])
+    monkeypatch.setenv('IHT_RECOVER_CRASH','1')
+    manager.start()
+    try:assert store.get(job['id'])['status']=='cancelled'
+    finally:manager.close()

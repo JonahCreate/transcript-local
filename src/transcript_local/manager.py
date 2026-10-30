@@ -1,4 +1,5 @@
 import fcntl
+import errno
 import hashlib
 import json
 import os
@@ -31,7 +32,12 @@ class Manager:
             raise RuntimeError('已有另一個 transcript-local 正在使用這個資料目錄，請先關閉它')
         for job in self.store.list():
             if job['status'] in ACTIVE:
-                job['status']='interrupted';job['error']='上次程式已結束，按「續跑」接續已完成片段'
+                if os.environ.get('IHT_RECOVER_CRASH')=='1' and job['status']=='running':
+                    job['status']='queued';job['error']='服務異常後自動恢復一次，接續完成片段'
+                elif job['status']=='cancelling':
+                    job['status']='cancelled';job['error']=None
+                else:
+                    job['status']='interrupted';job['error']='上次程式已結束，按「續跑」接續已完成片段'
                 self.store.save(job)
         self.thread=threading.Thread(target=self._loop,daemon=True)
         self.thread.start()
@@ -80,7 +86,7 @@ class Manager:
             if job['status'] not in {'failed','cancelled','interrupted'}:raise ValueError('這個任務無須續跑')
             if not resolve_model(self.store,job['model'],job['model_revision']):
                 raise ValueError('原本使用的模型版本已不存在，請恢復該版本或保留原稿並建立新任務')
-            job['status']='queued';job['error']=None;self.store.save(job)
+            job['status']='queued';job['error']=None;job.pop('error_hint',None);job.pop('error_code',None);self.store.save(job)
             return job
 
     def cancel(self, job_id):
@@ -111,10 +117,14 @@ class Manager:
                 job['status']='running';job['error']=None;self.store.save(job)
                 try:
                     log=(path/'worker.log').open('ab')
+                    log_offset=log.tell()
                     env=dict(os.environ,HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
                     self.proc=subprocess.Popen([sys.executable,'-m','transcript_local.worker',str(self.store.root),job['id']],stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
                 except Exception as exc:
-                    job['status']='failed';job['error']=str(exc);self.store.save(job);self.current=None
+                    job['status']='failed';job['error']=str(exc)
+                    if isinstance(exc,OSError) and exc.errno in {errno.EAGAIN,errno.EINTR}:self._retry(job)
+                    if job['status']=='failed':self._describe_error(job)
+                    self.store.save(job);self.current=None
                     if 'log' in locals():log.close()
                     continue
             code=self.proc.wait()
@@ -127,8 +137,33 @@ class Manager:
                 else:
                     job['status']='failed'
                     with (path/'worker.log').open('rb') as stream:
-                        stream.seek(max(0,stream.seek(0,2)-1600));job['error']=stream.read().decode('utf-8',errors='replace')
+                        stream.seek(max(log_offset,stream.seek(0,2)-1600));job['error']=stream.read().decode('utf-8',errors='replace')
+                    if 'init_sys_streams' in job['error'] and 'Bad file descriptor' in job['error']:self._retry(job)
+                if job['status']=='failed':self._describe_error(job)
                 self.store.save(job);self.current=None;self.proc=None
+
+    @staticmethod
+    def _describe_error(job):
+        error=job.get('error') or ''
+        code,hint='unknown','辨識未完成，已保留進度。可查看錯誤詳情，處理後按續跑。'
+        if 'Bad file descriptor' in error:
+            code,hint='startup_io','辨識程序啟動失敗。請從選單停止並重新開啟服務，再按續跑。'
+        elif 'No space left' in error or '磁碟空間' in error:
+            code,hint='disk_full','磁碟空間不足。請先釋放空間，再按續跑。'
+        elif '音軌' in error or 'Invalid data found' in error:
+            code,hint='invalid_audio','無法讀取音訊。請確認錄音可播放、影片含音軌，必要時重新匯出音檔。'
+        elif 'model.bin' in error or '模型檔' in error:
+            code,hint='model_missing','模型檔案無法讀取。請到環境與模型確認模型完整後再續跑。'
+        elif 'bad_alloc' in error or 'out of memory' in error.lower():
+            code,hint='memory','記憶體不足。請先關閉其他大型程式，或用 Small 建立新任務。'
+        job['error_code']=code;job['error_hint']=hint
+
+    @staticmethod
+    def _retry(job):
+        if job.get('recovery_attempts',0)<1:
+            job['recovery_attempts']=1
+            job['status']='queued'
+            job['error']='暫時性啟動異常，正在安全重試一次。'
 
     def delete(self, job_id):
         with self.lock:
