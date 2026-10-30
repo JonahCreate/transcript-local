@@ -4,6 +4,7 @@ import sys
 import time
 from .service import ensure, healthy, request, stop, runtime, busy_lease
 from .store import read_json, ACTIVE
+from .update_check import check_remote
 
 LOGO = [r'  ___ _   _ _____', r' |_ _| |_| |_   _|', r'  | ||  _  | | |', r' |___|_| |_| |_|', '  I HATE TRANSCRIPTION.', '  Less typing. More living.']
 OPTIONS = ['開啟網頁工作台', '查看轉錄進度', '檢查更新', '停止背景服務', '離開選單']
@@ -45,11 +46,13 @@ def _screen(screen, store):
     if curses.has_colors():
         curses.start_color(); curses.use_default_colors(); curses.init_pair(1, curses.COLOR_RED, -1)
     screen.keypad(True); screen.timeout(1000)
-    selected = 0; message = ''; last = 0; info = None; jobs = []
+    selected = 0; message = ''; last = 0; info = None; jobs = []; checked={}
     def put(y, text, attr=0):
         height, width = screen.getmaxyx()
         if y < height - 1:
-            try: screen.addnstr(y, 2, text, max(1, width - 4), attr)
+            try:
+                screen.move(y,2);screen.clrtoeol()
+                screen.addnstr(y, 2, text, max(1, width - 4), attr)
             except curses.error: pass
     def confirm(text):
         put(15, text + ' [y/N]'); screen.refresh(); screen.timeout(-1)
@@ -70,6 +73,11 @@ def _screen(screen, store):
         if update.get('status') in {'requested','preparing','validating','switching'}: state = '更新進行中';put(7,'● 更新進行中 · '+update.get('message',''))
         for i, option in enumerate(OPTIONS):
             text = option
+            if i==2:
+                if update.get('status') in {'requested','preparing','validating','switching'}:text='更新進行中 · 請稍候'
+                elif checked.get('can_update'):text='↑ 有新版 · 檢查與更新'
+                elif checked.get('check_status')=='up_to_date':text='✓ 已是最新 · 再次檢查'
+                elif checked.get('check_status')=='check_failed':text='檢查更新 · 無法連線'
             if i==0 and not info and busy_lease(store):text='服務失去回應 · 檢查修復說明'
             put(9 + i, f'{"❯" if i == selected else " "} {i + 1}  {text}', curses.A_REVERSE if i == selected else 0)
         put(16, message[:300]); put(18, '↑↓ 選擇 · Enter 確認 · 數字快捷 · Esc 離開')
@@ -84,11 +92,11 @@ def _screen(screen, store):
             elif selected == 1:
                 progress(screen,store)
             elif selected == 2:
-                info=ensure(store,False);checked=request(info,'/api/update/check',{})
-                if not checked.get('can_update'):message=checked.get('check_message','無法確認版本');continue
-                if active:message='有新版本；請先等待任務完成或停止任務。';continue
-                if confirm('確認所有網頁的修改都已儲存，開始更新？'):
-                    result=request(info, '/api/update', {});message=result.get('message') if result.get('status')=='requested' else result.get('check_message','請查看工作台。')
+                if update.get('status') in {'requested','preparing','validating','switching'}:
+                    message='更新已在進行中，請稍候。';continue
+                def show(text):
+                    put(16,text);screen.refresh()
+                checked,message=terminal_update(store,info,active,confirm,show)
             elif selected == 3:
                 if confirm(f'停止背景服務？目前有 {active} 個處理中任務，已完成片段會保留。'):
                     try: message = stop(store)
@@ -122,3 +130,22 @@ def progress(screen,store):
         if key in (27,ord('q')):return
         if key==curses.KEY_DOWN:offset=min(max(0,len(lines)-height+1),offset+1)
         if key==curses.KEY_UP:offset=max(0,offset-1)
+
+
+def terminal_update(store,info,active,confirm,show):
+    show('正在比對 GitHub 版本，請稍候…')
+    if info:
+        checked=request(info,'/api/update/check',{})
+    else:
+        current=read_json(runtime(store)/'current.json',{})
+        checked=check_remote(current.get('revision',''))
+    if not checked.get('can_update'):
+        return checked,checked.get('check_message','目前無法確認版本。')
+    if active:
+        return checked,'有新版本；請先等待任務完成或停止任務。'
+    show('發現新版本。確認後才會下載與安裝。')
+    if not confirm('有新版；確認所有網頁修改已儲存，開始安裝？'):
+        return checked,'已取消安裝；目前版本繼續使用。'
+    info=info or ensure(store,False)
+    result=request(info,'/api/update',{})
+    return checked,result.get('message') if result.get('status')=='requested' else result.get('check_message','請查看工作台。')
