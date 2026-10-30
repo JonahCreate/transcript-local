@@ -34,7 +34,7 @@ def request(info, path='/api/health', body=None):
     data = None if body is None else json.dumps(body).encode()
     if data is not None: headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', data=data, headers=headers)
-    with urllib.request.urlopen(req, timeout=3) as response:
+    with urllib.request.urlopen(req, timeout=20 if path in {'/api/update/check','/api/update'} else 3) as response:
         return json.load(response) if response.status != 204 else None
 
 
