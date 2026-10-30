@@ -46,8 +46,13 @@ class Manager:
         resolved=resolve_model(self.store,model)
         if not resolved:raise ValueError('請先下載所選模型')
         if language not in {'zh','en','auto'}:raise ValueError('不支援的語言設定')
-        return {'model':model,'model_revision':resolved['revision'],
-                'language':language,'enhance':enhance,'prompts':self.store.glossary()['prompts'],'pipeline_version':1}
+        settings={'model':model,'model_revision':resolved['revision'],
+                  'language':language,'enhance':enhance,'prompts':self.store.glossary()['prompts'],'pipeline_version':1}
+        if model=='qwen3':
+            aligner=resolve_model(self.store,'qwen3-aligner')
+            if not aligner:raise ValueError('請先下載 Qwen 的時間對齊模型')
+            settings.update(aligner_revision=aligner['revision'],pipeline_version=2)
+        return settings
 
     def commit_source(self, staging, name, settings, force=False):
         name=clean_name(name)
@@ -86,6 +91,8 @@ class Manager:
             if job['status'] not in {'failed','cancelled','interrupted'}:raise ValueError('這個任務無須續跑')
             if not resolve_model(self.store,job['model'],job['model_revision']):
                 raise ValueError('原本使用的模型版本已不存在，請恢復該版本或保留原稿並建立新任務')
+            if job['model']=='qwen3' and not resolve_model(self.store,'qwen3-aligner',job.get('aligner_revision')):
+                raise ValueError('原本使用的時間對齊模型版本已不存在，請恢復該版本或建立新任務')
             job['status']='queued';job['error']=None;job.pop('error_hint',None);job.pop('error_code',None);self.store.save(job)
             return job
 

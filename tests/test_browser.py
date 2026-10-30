@@ -52,6 +52,99 @@ def test_browser_three_edits_exports_and_reload(review_page,store,browser_job,tm
     if os.environ.get('IHT_SCREENSHOT'):
         page.screenshot(path=os.environ['IHT_SCREENSHOT'],full_page=True)
 
+def test_browser_model_choices_explain_tradeoffs(review_page):
+    page=review_page
+    for value,description in [('medium','均衡選擇'),('small','模型較小'),('qwen3','時間對齊模型')]:
+        page.locator('#model').select_option(value)
+        expect(page.locator('#model-explanation')).to_contain_text(description)
+    expect(page.locator('#model-explanation')).to_contain_text('尚未就緒')
+    page.get_by_role('button',name='環境與模型').click()
+    expect(page.locator('#models')).to_contain_text('Qwen3-ASR 1.7B')
+
+@pytest.fixture
+def empty_page(store,supervised):
+    with sync_playwright() as playwright:
+        browser=playwright.chromium.launch()
+        page=browser.new_page(viewport={'width':1440,'height':1000})
+        page.on('dialog',lambda d:d.accept())
+        info=healthy(store)
+        page.goto(f'http://127.0.0.1:{info["port"]}/#session={info["token"]}')
+        expect(page.locator('#jobs')).to_contain_text('第一份逐字稿')
+        yield page
+        browser.close()
+
+def make_browser_job(store,wav,document,name,created):
+    job={'id':store.new_id(),'name':name,'status':'running','model':'small','created_at':created,'suffix':'.wav'}
+    path=store.job_dir(job['id']);path.mkdir();store.save(job)
+    atomic_json(path/'transcript.json',document)
+    (path/'audio.wav').write_bytes(wav.read_bytes())
+    return job
+
+def finish_browser_job(store,job):
+    job['status']='complete';store.save(job)
+
+def test_browser_auto_opens_first_completion_and_preserves_edits(empty_page,store,wav,document):
+    page=empty_page
+    first=make_browser_job(store,wav,document,'第一份.wav','2026-01-01T00:00:01')
+    second=make_browser_job(store,wav,document,'第二份.wav','2026-01-01T00:00:02')
+    expect(page.get_by_role('button',name='第一份.wav')).to_be_visible(timeout=10000)
+    expect(page.get_by_role('button',name='第二份.wav')).to_be_visible()
+    finish_browser_job(store,first)
+    expect(page.locator('#recording-name')).to_have_text('第一份.wav',timeout=10000)
+    expect(page.locator('.job.active')).to_contain_text('檢視中')
+    page.locator('#segments textarea').first.fill('還沒儲存的內容')
+    finish_browser_job(store,second)
+    expect(page.locator('#jobs')).to_contain_text('已完成・點擊查看',timeout=10000)
+    expect(page.locator('#recording-name')).to_have_text('第一份.wav')
+    expect(page.locator('#segments textarea').first).to_have_value('還沒儲存的內容')
+    page.get_by_role('button',name='第二份.wav').click()
+    expect(page.locator('#recording-name')).to_have_text('第二份.wav')
+    assert list((store.job_dir(first['id'])/'drafts').glob('*.json'))
+
+def test_browser_background_completion_opens_oldest(empty_page,store,wav,document):
+    page=empty_page
+    first=make_browser_job(store,wav,document,'先加入.wav','2026-01-01T00:00:01')
+    second=make_browser_job(store,wav,document,'後加入.wav','2026-01-01T00:00:02')
+    expect(page.get_by_role('button',name='後加入.wav')).to_be_visible(timeout=10000)
+    page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true})")
+    finish_browser_job(store,second);finish_browser_job(store,first)
+    page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'))")
+    expect(page.locator('#recording-name')).to_have_text('先加入.wav',timeout=10000)
+    expect(page.locator('#jobs')).to_contain_text('已完成・點擊查看')
+
+def test_browser_existing_completion_does_not_auto_open_on_reload(empty_page,store,wav,document):
+    job=make_browser_job(store,wav,document,'舊稿.wav','2026-01-01T00:00:01');finish_browser_job(store,job)
+    empty_page.reload()
+    expect(empty_page.get_by_role('button',name='舊稿.wav')).to_be_visible()
+    expect(empty_page.locator('#editor-empty')).to_be_visible()
+
+def test_browser_manual_choice_wins_over_slow_auto_open(empty_page,store,wav,document):
+    page=empty_page
+    old=make_browser_job(store,wav,document,'手動選擇.wav','2026-01-01T00:00:01');finish_browser_job(store,old)
+    page.reload();expect(page.get_by_role('button',name='手動選擇.wav')).to_be_visible()
+    new=make_browser_job(store,wav,document,'新完成.wav','2026-01-01T00:00:02')
+    expect(page.get_by_role('button',name='新完成.wav')).to_be_visible(timeout=10000)
+    page.evaluate('''id=>{const original=window.fetch;window.autoFetchStarted=false;
+      window.autoFetchGate=new Promise(resolve=>window.releaseAutoFetch=resolve);
+      window.fetch=async (...args)=>{if(String(args[0])===`/api/jobs/${id}/transcript`){window.autoFetchStarted=true;await window.autoFetchGate;}return original(...args);};}''',new['id'])
+    finish_browser_job(store,new)
+    page.wait_for_function('() => window.autoFetchStarted',timeout=10000)
+    page.get_by_role('button',name='手動選擇.wav').click()
+    expect(page.locator('#recording-name')).to_have_text('手動選擇.wav')
+    page.evaluate('window.releaseAutoFetch()')
+    expect(page.locator('#recording-name')).to_have_text('手動選擇.wav')
+
+def test_browser_failed_or_cancelled_jobs_do_not_auto_open(empty_page,store,wav,document):
+    page=empty_page
+    failed=make_browser_job(store,wav,document,'失敗.wav','2026-01-01T00:00:01')
+    cancelled=make_browser_job(store,wav,document,'取消.wav','2026-01-01T00:00:02')
+    expect(page.get_by_role('button',name='取消.wav')).to_be_visible(timeout=10000)
+    failed['status']='failed';store.save(failed)
+    cancelled['status']='cancelled';store.save(cancelled)
+    expect(page.locator('#jobs')).to_contain_text('處理失敗',timeout=10000)
+    expect(page.locator('#jobs')).to_contain_text('已停止')
+    expect(page.locator('#editor-empty')).to_be_visible()
+
 
 def test_browser_save_failure_preserves_text_and_retries(review_page):
     page=review_page

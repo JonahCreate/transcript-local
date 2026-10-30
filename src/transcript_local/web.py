@@ -22,7 +22,7 @@ from .updater import Updater
 from .review import FORMAT_NAMES, export, preview, save_edits
 
 class ModelChoice(BaseModel):
-    name: Literal['medium','small']
+    name: Literal['medium','small','qwen3']
 
 class Edit(BaseModel):
     id: int
@@ -189,7 +189,7 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
         return [dict(j,progress=read_json(store.job_dir(j['id'])/'progress.json',{})) for j in store.list()]
 
     @app.post('/api/jobs',dependencies=[Depends(auth)],status_code=202)
-    def upload(file:UploadFile=File(...), model:Literal['medium','small']=Form('medium'),
+    def upload(file:UploadFile=File(...), model:Literal['medium','small','qwen3']=Form('medium'),
                language:Literal['zh','en','auto']=Form('zh'), enhance:bool=Form(False), force:bool=Form(False)):
         name=clean_name(file.filename or '')
         settings=manager.settings(model,language,enhance)

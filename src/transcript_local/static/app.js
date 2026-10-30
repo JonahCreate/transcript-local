@@ -1,9 +1,12 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const state = {files: [], jobs: [], current: null, doc: null, dirty: false, status: null, busy: false, preview: null, authenticated: false, jobsKey: '', changed:new Set(), recoveredDraftIds:new Set(), updating:false, stopped:false, saving:false, opening:false, checking:false};
+const jobStatus = new Map();
+let jobsInitialized=false, jobRequest=0, appliedJobRequest=0, openRequest=0, openingAutomatic=false, pendingCompletions=[];
 const windowId=sessionStorage.getItem('iht-window')||crypto.randomUUID();sessionStorage.setItem('iht-window',windowId);
 let draftTimer, draftQueue=Promise.resolve(), positionTimer;
 const statusLabels = {queued:'排隊中',running:'處理中',cancelling:'停止中',cancelled:'已停止',interrupted:'可續跑',failed:'處理失敗',complete:'可校稿'};
+const modelInfo={medium:{title:'Whisper Medium',description:'一般中文錄音的均衡選擇；不知道選哪個時可先使用。速度與資源需求居中。'},small:{title:'Whisper Small',description:'模型較小，適合短錄音或希望較快取得初稿；可能需要較多校稿。'},qwen3:{title:'Qwen3-ASR 1.7B',description:'適合想嘗試另一種中文辨識結果，或 Whisper 辨識不理想的錄音。需額外下載時間對齊模型；處理時間與資源需求視電腦和錄音而定。'}};
 function el(tag, text, cls) {const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n;}
 function notify(message) {$('toast').textContent = message; $('toast').hidden = false; clearTimeout(notify.timer); notify.timer = setTimeout(() => $('toast').hidden = true, 6500);}
 function bytes(n) {return n >= 1024**3 ? (n/1024**3).toFixed(1)+' GB' : (n/1024**2).toFixed(0)+' MB';}
@@ -26,14 +29,14 @@ $('drop-zone').ondragover=e=>{e.preventDefault();$('drop-zone').classList.add('d
 $('drop-zone').ondragleave=()=>$('drop-zone').classList.remove('dragover');
 $('drop-zone').ondrop=e=>{e.preventDefault();$('drop-zone').classList.remove('dragover');setFiles(e.dataTransfer.files);};
 $('model').onchange=updateSubmit;
-function updateSubmit() {const ready=state.status?.models.find(m=>m.name===$('model').value)?.ready; $('submit').disabled=!ready||!state.status?.ffmpeg||!state.files.length||state.busy||state.updating||state.stopped;}
+function updateSubmit() {const selected=state.status?.models.find(m=>m.name===$('model').value);const active=state.status?.download.name===selected?.name&&state.status?.download.status==='downloading';$('model-explanation').textContent=modelInfo[$('model').value].description+'　'+(selected?.ready?'已下載，可離線使用。':active?'下載中。':selected?'尚未就緒：缺少'+selected.missing.join('、')+'，請至「環境與模型」下載。':''); $('submit').disabled=!selected?.ready||!state.status?.ffmpeg||!state.files.length||state.busy||state.updating||state.stopped;}
 $('submit').onclick=protect(async()=>{
   state.busy=true;updateSubmit();let count=0;
   try {
     for(const file of state.files) {
       $('submit').textContent=`傳入本機服務 ${count+1}/${state.files.length}…`;
       const form=new FormData();form.append('file',file);form.append('model',$('model').value);form.append('language',$('language').value);form.append('enhance',$('enhance').checked);form.append('force',$('force').checked);
-      try {await api('/jobs',{method:'POST',body:form});count++;} catch(e) {notify(`${file.name}：${e.message}`);}
+      try {const job=await api('/jobs',{method:'POST',body:form});if(!jobStatus.has(job.id))jobStatus.set(job.id,job.status==='complete'?'queued':job.status);count++;} catch(e) {notify(`${file.name}：${e.message}`);}
     }
     if(count){notify($('force').checked ? `已建立 ${count} 個新版本。` : `已加入 ${count} 個檔案；相同內容與設定的任務會沿用。`);setFiles([]);$('files').value='';}
   } finally {state.busy=false;$('submit').textContent='加入轉錄佇列 →';updateSubmit();await refreshJobs();}
@@ -43,17 +46,21 @@ async function refreshStatus() {
   $('setup-notice').hidden=s.models.some(m=>m.ready)&&s.ffmpeg;
   $('data-path').textContent=s.data_path;$('used-space').textContent=bytes(s.used_bytes);$('free-space').textContent=bytes(s.free_bytes);$('trash-space').textContent=bytes(s.trash_bytes);$('ffmpeg-status').textContent=s.ffmpeg?'已安裝':'缺少：brew install ffmpeg';
   $('models').replaceChildren(...s.models.map(m=>{
-    const card=el('section',undefined,'panel model-card');card.append(el('h3',m.name==='medium'?'Medium':'Small'),el('span',m.ready?'已準備完成 · 可離線使用':`下載約 ${bytes(m.estimated_bytes)}，實際依模型檔案而定`,'model-size'),el('p',m.name==='medium'?'建議從這裡開始。適合一般中文錄音，處理時間較長。':'較輕量，適合先確認流程與較短錄音；複雜內容可能需要更多校稿。'));
-    const active=s.download.name===m.name;card.append(el('p',m.ready?(m.source==='cache'?'已下載 · 使用既有 Hugging Face 快取':'已下載 · 儲存在本工具模型資料夾'):active&&s.download.status==='downloading'?'下載中，請保持程式開啟…':active&&s.download.status==='failed'?`下載失敗：${s.download.error}`:'尚未下載','model-status'));
+    const card=el('section',undefined,'panel model-card');card.append(el('h3',modelInfo[m.name].title),el('span',m.ready?'已準備完成 · 可離線使用':`完整模型約 ${bytes(m.estimated_bytes)}，已下載部分不重複下載`,'model-size'),el('p',modelInfo[m.name].description));
+    const active=s.download.name===m.name;card.append(el('p',m.ready?(m.source==='cache'?'已下載 · 使用既有 Hugging Face 快取':'已下載 · 儲存在本工具模型資料夾'):active&&s.download.status==='downloading'?'下載中，請保持程式開啟…':active&&s.download.status==='failed'?`下載失敗：${s.download.error}`:`尚未就緒：缺少${m.missing.join('、')}`,'model-status'));
     const b=el('button',m.ready?'已準備完成':active&&s.download.status==='failed'?'重試下載':'下載模型','button '+(m.ready?'subtle':'primary'));b.disabled=m.ready||s.download.status==='downloading';
-    b.onclick=protect(async()=>{if(!confirm(`下載 ${m.name} 模型（約 ${bytes(m.estimated_bytes)}）至：\n${m.path}\n\n模型由 Hugging Face 取得。錄音不會隨下載上傳。`))return;await api('/models/download',{method:'POST',body:{name:m.name}});await refreshStatus();});card.append(b);return card;
+    b.onclick=protect(async()=>{if(!confirm(`準備 ${modelInfo[m.name].title}（完整模型約 ${bytes(m.estimated_bytes)}，已下載部分不重複下載）\n辨識模型：${m.path}${m.aligner_path?'\n時間對齊模型：'+m.aligner_path:''}\n\n模型由 Hugging Face 取得。錄音不會隨下載上傳。`))return;await api('/models/download',{method:'POST',body:{name:m.name}});await refreshStatus();});card.append(b);return card;
   }));updateSubmit();
 }
 async function refreshJobs() {
-  const jobs=await api('/jobs');if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length; const key=JSON.stringify([state.current,jobs]); if(key===state.jobsKey)return; state.jobsKey=key;
+  const request=++jobRequest;const jobs=await api('/jobs');if(request<appliedJobRequest)return;appliedJobRequest=request;
+  const completed=jobs.filter(j=>j.status==='complete'&&['queued','running'].includes(jobStatus.get(j.id))).sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id));
+  for(const j of jobs)jobStatus.set(j.id,j.status);
+  if(jobsInitialized&&completed.length){pendingCompletions.push(...completed.map(j=>j.id));if(state.current)notify(completed.length===1?`「${completed[0].name}」已完成，可從任務記錄點擊查看。`:`${completed.length} 份逐字稿已完成，可從任務記錄點擊查看。`);}
+  if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length; const key=JSON.stringify([state.current,jobs]); if(key===state.jobsKey){scheduleCompleted();return;} state.jobsKey=key;
   if (!jobs.length){$('jobs').replaceChildren(el('p','第一份逐字稿，從一段錄音開始。','empty-small'));return;}
   $('jobs').replaceChildren(...jobs.map(j=>{
-    const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));item.append(title,el('div',`${statusLabels[j.status]||j.status} · ${j.model}`,'job-meta'));
+    const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));const label=j.status==='complete'?(j.id===state.current?'檢視中':'已完成・點擊查看'):(statusLabels[j.status]||j.status);item.append(title,el('div',`${label} · ${j.model}`,'job-meta'));
     if(j.progress?.message&&j.status!=='complete')item.append(el('p',j.progress.message,'job-meta'));
     if(j.status==='running'&&j.progress?.total){const p=el('progress');p.max=j.progress.total;p.value=j.progress.completed||0;p.setAttribute('aria-label','辨識片段進度');item.append(p);}
     if(j.error){item.append(el('div',j.error_hint||j.error,'job-error'));if(j.error_hint){const details=el('details',undefined,'original');details.append(el('summary','查看錯誤詳情'),el('pre',j.error));item.append(details);}}
@@ -62,19 +69,32 @@ async function refreshJobs() {
     if(['failed','cancelled','interrupted'].includes(j.status)){const b=el('button','續跑','button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
     if(!['queued','running','cancelling'].includes(j.status)){const b=el('button','清除','button subtle');b.onclick=protect(async()=>{if(!confirm(`將「${j.name}」的副本、進度與校稿移至本機 trash？\n原始錄音不會刪除。`))return;if(j.id===state.current&&state.dirty&&!confirm('尚有未儲存修改，仍要清除嗎？'))return;await api(`/jobs/${j.id}`,{method:'DELETE'});if(j.id===state.current){state.current=null;state.doc=null;state.dirty=false;$('editor').hidden=true;$('editor-empty').hidden=false;}await refreshJobs();await refreshStatus();});buttons.append(b);}
     item.append(buttons);return item;
-  }));
+  }));scheduleCompleted();
+}
+function scheduleCompleted(){
+  if(!jobsInitialized||!pendingCompletions.length||document.hidden)return;
+  if(state.current){pendingCompletions=[];return;}
+  if(state.opening||state.saving||state.dirty)return;
+  const job=state.jobs.find(j=>j.id===pendingCompletions[0]&&j.status==='complete');
+  if(!job){pendingCompletions.shift();scheduleCompleted();return;}
+  pendingCompletions=[];
+  protect(()=>openJob(job,0,0,true))();
 }
 function markDirty(id){if(id!==undefined)state.changed.add(id);clearTimeout(draftTimer);draftTimer=setTimeout(()=>protect(flushDraft)(),1000);state.dirty=true;$('save').disabled=false;$('save-state').textContent='尚未儲存';$('export-version').textContent='有未儲存修改；儲存後才能下載最新版。';}
-async function openJob(j,position=0,segmentPosition=0){
-  if(state.saving||state.opening){notify('正在儲存或載入，請稍候。');return;}
+async function openJob(j,position=0,segmentPosition=0,automatic=false){
+  if(state.saving||(state.opening&&(automatic||!openingAutomatic))){if(!automatic)notify('正在儲存或載入，請稍候。');return;}
+  if(automatic&&(state.current||state.dirty))return;
   if(j.status!=='complete'){notify(j.error||j.progress?.message||'任務完成後即可校稿。');return;}
+  const request=++openRequest;state.opening=true;openingAutomatic=automatic;
+  try {
   if(state.dirty){await flushDraft();if(!confirm('修改已備份為草稿，仍要切換稿件嗎？'))return;}
-  state.opening=true;$('editor').hidden=true;$('editor-empty').hidden=false;try {
-  const doc=await api(`/jobs/${j.id}/transcript`);state.current=j.id;state.doc=doc;state.dirty=false;state.changed.clear();state.recoveredDraftIds.clear();
+  const doc=await api(`/jobs/${j.id}/transcript`);if(request!==openRequest||(automatic&&(state.current||state.dirty)))return;
+  state.current=j.id;state.doc=doc;state.dirty=false;state.changed.clear();state.recoveredDraftIds.clear();
   await api('/preferences',{method:'PUT',body:{job_id:j.id,position,segment_position:segmentPosition}});
+  if(request!==openRequest)return;
   $('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
   renderSegments();renderExports();await loadDrafts();await refreshJobs();$('editor-empty').hidden=true;$('editor').hidden=false;window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
-  }finally{state.opening=false;}
+  }finally{if(request===openRequest){state.opening=false;openingAutomatic=false;scheduleCompleted();}}
 }
 function renderSegments(){
   $('segments').replaceChildren(...state.doc.segments.map(r=>{
@@ -135,11 +155,14 @@ async function init(){
   const g=await api('/glossary');$('prompts').value=g.prompts.join('\n');$('rules').value=g.rules.map(r=>r.from+' → '+r.to).join('\n');await refreshJobs();
   if(!state.status.models.some(m=>m.ready))changeView('setup');
   const prefs=await api('/preferences');const last=state.jobs.find(j=>j.id===prefs.job_id&&j.status==='complete');if(last)await openJob(last,prefs.position||0,prefs.segment_position||0);
+  jobsInitialized=true;await refreshJobs();
   state.checking=true;api('/update/check',{method:'POST'}).then(result=>{state.checking=false;renderUpdate(result);}).catch(()=>{state.checking=false;});
 }
 protect(init)();
 let polling=false;
-setInterval(async()=>{if(!state.authenticated||polling||document.hidden||state.stopped)return;polling=true;try{await refreshJobs();if(state.status?.download.status==='downloading')await refreshStatus();}catch(e){$('service-notice').hidden=false;$('service-message').textContent=state.updating?'正在切換版本，請稍候新網頁。':'服務已停止或連線中斷。請輸入 tr，選擇開啟工作台。';}finally{polling=false;}},2500);
+async function pollJobs(){if(!state.authenticated||!jobsInitialized||polling||document.hidden||state.stopped)return;polling=true;try{await refreshJobs();if(state.status?.download.status==='downloading')await refreshStatus();}catch(e){$('service-notice').hidden=false;$('service-message').textContent=state.updating?'正在切換版本，請稍候新網頁。':'服務已停止或連線中斷。請輸入 tr，選擇開啟工作台。';}finally{polling=false;}}
+setInterval(pollJobs,2500);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollJobs();});
 setInterval(()=>{if(state.authenticated&&!state.stopped&&!document.hidden)protect(refreshStatus)();},20000);
 
 $('update-button').onclick=protect(async()=>{

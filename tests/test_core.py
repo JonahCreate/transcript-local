@@ -11,6 +11,51 @@ from transcript_local.manager import Manager
 from transcript_local.review import export, save_edits, preview
 from transcript_local.worker import run
 
+def install_fake_qwen(store):
+    from transcript_local.models import QWEN_REQUIRED, ALIGNER_REQUIRED
+    for name, files in [('qwen3',QWEN_REQUIRED),('qwen3-aligner',ALIGNER_REQUIRED)]:
+        directory=store.models/name;directory.mkdir()
+        for filename in files:(directory/filename).write_text('{}')
+        atomic_json(directory/'installed.json',{'revision':name+'-revision','repo':'test'})
+
+def test_qwen_requires_both_models_and_pins_aligner(store):
+    install_fake_qwen(store)
+    assert available(store,'qwen3')
+    settings=Manager(store).settings('qwen3','zh',False)
+    assert settings['aligner_revision']=='qwen3-aligner-revision'
+    (store.models/'qwen3-aligner'/'model.safetensors').unlink()
+    assert not available(store,'qwen3')
+    with pytest.raises(ValueError,match='時間對齊'):Manager(store).settings('qwen3','zh',False)
+
+def test_qwen_alignment_preserves_punctuation_and_rejects_mismatch():
+    from transcript_local.worker import qwen_rows
+    result=SimpleNamespace(text='你好，世界！Hello.',segments=[{'text':'你好','start':0.1,'end':0.5},{'text':'世界','start':0.6,'end':1.0},{'text':'Hello','start':1.2,'end':1.8}])
+    rows=qwen_rows(result,30)
+    assert ''.join(row['text'] for row in rows)==result.text
+    assert rows[0]['words'][0]['start']==30.1
+    assert rows[0]['avg_logprob'] is None
+    mixed=SimpleNamespace(text='AI-powered，價格 1,000 元。',segments=[{'text':'AIpowered','start':0.1,'end':0.5},{'text':'價','start':0.6,'end':0.7},{'text':'格','start':0.7,'end':0.8},{'text':'1000','start':0.8,'end':1.0},{'text':'元','start':1.0,'end':1.2}])
+    assert ''.join(row['text'] for row in qwen_rows(mixed,0))==mixed.text
+    with pytest.raises(RuntimeError,match='不一致'):
+        qwen_rows(SimpleNamespace(text='你好',segments=[{'text':'錯誤','start':0,'end':1}]),0)
+
+def test_qwen_worker_checkpoint_and_edits(store,wav,monkeypatch):
+    install_fake_qwen(store)
+    class Session:
+        def __init__(self,model):pass
+        def transcribe(self,samples,**kwargs):
+            assert kwargs['return_timestamps'] and kwargs['language']=='Chinese'
+            return SimpleNamespace(text='测试共槽。',segments=[{'start':0.1,'end':0.8,'text':'测试共槽'}])
+    monkeypatch.setitem(sys.modules,'mlx_qwen3_asr',SimpleNamespace(Session=Session))
+    monkeypatch.setitem(sys.modules,'mlx_qwen3_asr.forced_aligner',SimpleNamespace(ForcedAligner=lambda path: object()))
+    job=Manager(store).import_file(wav,model='qwen3');run(store,job['id'])
+    path=store.job_dir(job['id']);doc=read_json(path/'transcript.json')
+    assert doc['segments'][0]['traditional_text']=='測試共槽。'
+    doc['segments'][0]['edited_text']='人工校稿';atomic_json(path/'transcript.json',doc)
+    run(store,job['id'])
+    assert read_json(path/'transcript.json')['segments'][0]['edited_text']=='人工校稿'
+    assert (path/'chunk-0000.json').exists()
+
 @pytest.mark.parametrize('name',['../x.txt','', 'x.exe','..','a'*230+'.wav'])
 def test_bad_filename(name):
     with pytest.raises(ValueError):clean_name(name)

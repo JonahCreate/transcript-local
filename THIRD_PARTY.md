@@ -7,6 +7,8 @@
 | faster-whisper（MIT） | 本機語音辨識 | https://github.com/SYSTRAN/faster-whisper |
 | CTranslate2（MIT） | 推論執行 | https://github.com/OpenNMT/CTranslate2 |
 | Whisper（MIT） | 模型來源 | https://github.com/openai/whisper |
+| mlx-qwen3-asr（Apache-2.0）／MLX（MIT） | Apple Silicon Qwen 辨識與時間對齊 | https://github.com/moona3k/mlx-qwen3-asr 、https://github.com/ml-explore/mlx |
+| Qwen3-ASR 與 ForcedAligner（Apache-2.0） | 語音辨識與時間對齊模型 | https://huggingface.co/minimalcorp/Qwen3-ASR-1.7B-MLX-8bit 、https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B |
 | Systran faster-whisper models | 轉換後模型，權重不包含於 repo | https://huggingface.co/Systran/faster-whisper-medium 、https://huggingface.co/Systran/faster-whisper-small |
 | FastAPI（MIT）／Starlette（BSD-3-Clause） | 本機服務 | https://github.com/fastapi/fastapi 、https://github.com/Kludex/starlette |
 | Uvicorn（BSD-3-Clause） | HTTP 服務 | https://github.com/Kludex/uvicorn |

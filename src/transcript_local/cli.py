@@ -30,10 +30,10 @@ def main(argv=None):
     serve.add_argument('--port',type=int,default=0,help='預設自動選擇可用連接埠')
     sub.add_parser('doctor',help='檢查環境與模型')
     models=sub.add_parser('download-model',help='明確下載模型')
-    models.add_argument('name',choices=['medium','small'])
+    models.add_argument('name',choices=['medium','small','qwen3'])
     trans=sub.add_parser('transcribe',help='轉錄檔案或資料夾，完成後退出')
     trans.add_argument('path',type=Path)
-    trans.add_argument('--model',choices=['medium','small'],default='medium')
+    trans.add_argument('--model',choices=['medium','small','qwen3'],default='medium')
     trans.add_argument('--language',choices=['zh','en','auto'],default='zh')
     trans.add_argument('--enhance',action='store_true')
     trans.add_argument('--recursive',action='store_true')
@@ -61,7 +61,7 @@ def main(argv=None):
         print('正式支援平台：'+('符合' if good else '未驗證；正式支援 Apple Silicon Mac'))
         print('FFmpeg：'+(shutil.which('ffmpeg') or '未安裝，請執行 brew install ffmpeg'))
         print('資料位置：'+str(store.root))
-        for name in ['medium','small']:print(f'{name}：'+('可離線使用' if available(store,name) else '尚未下載'))
+        for name in ['medium','small','qwen3']:print(f'{name}：'+('可離線使用' if available(store,name) else '尚未下載或檔案不完整'))
         return 0 if shutil.which('ffmpeg') else 1
     if args.command=='download-model':
         models=Models(store);models.download(args.name)

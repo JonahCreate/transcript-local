@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import unicodedata
 import wave
 from .store import Store, atomic_json, digest, read_json, now
 from .models import resolve_model
@@ -13,6 +14,54 @@ from .models import resolve_model
 def progress(path, **data):
     atomic_json(path/'progress.json', data)
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+def qwen_rows(result, offset):
+    """Keep the model's complete text while grouping aligned words into reviewable phrases."""
+    text = result.text
+    words = result.segments or []
+    if text.strip() and not words:
+        raise RuntimeError('時間對齊未產生結果，請確認時間對齊模型完整後重試')
+    rows = []
+    cursor = 0
+    group_start = 0
+    group_words = []
+    # The aligner removes punctuation inside tokens (e.g. "AI-powered" becomes
+    # "AIpowered"). Match its cleaned characters back to the original text.
+    normalized = []
+    positions = []
+    for index, char in enumerate(text):
+        if char == "'" or unicodedata.category(char)[0] in 'LN':
+            for folded in char.casefold():
+                normalized.append(folded);positions.append(index)
+    normalized = ''.join(normalized)
+    normalized_cursor = 0
+    for word in words:
+        token = word['text'].strip()
+        if not token: continue
+        clean = ''.join(c.casefold() for c in token if c == "'" or unicodedata.category(c)[0] in 'LN')
+        if not clean: continue
+        if normalized[normalized_cursor:normalized_cursor+len(clean)] != clean:
+            raise RuntimeError('時間對齊結果與辨識文字不一致，已停止以避免遺漏文字')
+        normalized_cursor += len(clean)
+        end = positions[normalized_cursor-1]+1
+        group_words.append({'start':float(word['start'])+offset, 'end':float(word['end'])+offset, 'text':word['text']})
+        cursor = end
+        tail = cursor
+        while tail < len(text) and (text[tail].isspace() or text[tail] in '，。！？；、,.!?;:：\"\'）)」』'):
+            tail += 1
+        if any(c in text[cursor:tail] for c in '。！？.!?；;') or group_words[-1]['end']-group_words[0]['start'] >= 12:
+            rows.append({'start':group_words[0]['start']-offset, 'end':group_words[-1]['end']-offset,
+                         'text':text[group_start:tail], 'avg_logprob':None, 'compression_ratio':None, 'words':group_words})
+            group_start = tail
+            group_words = []
+    if group_words:
+        rows.append({'start':group_words[0]['start']-offset, 'end':group_words[-1]['end']-offset,
+                     'text':text[group_start:], 'avg_logprob':None, 'compression_ratio':None, 'words':group_words})
+    elif rows and text[group_start:].strip():
+        rows[-1]['text'] += text[group_start:]
+    if normalized_cursor != len(normalized):
+        raise RuntimeError('時間對齊未涵蓋完整辨識文字，已停止以避免遺漏文字')
+    return rows
 
 
 def run(store, job_id):
@@ -39,13 +88,12 @@ def run(store, job_id):
         ranges = []
         start = 0.0
         while start < duration:
-            end = min(start+300, duration)
+            end = min(start+(30 if job['model']=='qwen3' else 300), duration)
             ranges.append((start,end))
             if end >= duration: break
             start = end-1
         os.environ['HF_HUB_OFFLINE'] = '1'
         os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
-        from faster_whisper import WhisperModel
         import numpy as np
         from opencc import OpenCC
         progress(path, phase='loading', message='載入本機模型', total=len(ranges), completed=0)
@@ -60,18 +108,32 @@ def run(store, job_id):
                 if model is None:
                     resolved = resolve_model(store, job['model'], job['model_revision'])
                     if not resolved: raise RuntimeError('原本使用的模型版本已不存在，請恢復該版本或建立新任務')
-                    model = WhisperModel(str(resolved['path']), device='cpu', compute_type='int8', cpu_threads=4, local_files_only=True)
+                    if job['model']=='qwen3':
+                        from mlx_qwen3_asr import Session
+                        from mlx_qwen3_asr.forced_aligner import ForcedAligner
+                        aligner_model=resolve_model(store,'qwen3-aligner',job['aligner_revision'])
+                        if not aligner_model:raise RuntimeError('原本使用的時間對齊模型版本已不存在')
+                        model=Session(model=str(resolved['path']))
+                        aligner=ForcedAligner(str(aligner_model['path']))
+                    else:
+                        from faster_whisper import WhisperModel
+                        model = WhisperModel(str(resolved['path']), device='cpu', compute_type='int8', cpu_threads=4, local_files_only=True)
                 progress(path, phase='transcribing', message=f'辨識片段 {index+1}/{len(ranges)}', total=len(ranges), completed=index)
                 wav.setpos(round(start*16000))
                 samples = np.frombuffer(wav.readframes(round((end-start)*16000)),dtype=np.int16).astype(np.float32)/32768
-                segments,_ = model.transcribe(samples, language=None if job['language']=='auto' else job['language'],
-                    beam_size=5, condition_on_previous_text=False, vad_filter=True, word_timestamps=True,
-                    initial_prompt='、'.join(job['prompts']) or None)
-                rows = []
-                for s in segments:
-                    rows.append({'start': s.start, 'end': s.end, 'text': s.text, 'avg_logprob': s.avg_logprob,
-                                 'compression_ratio': s.compression_ratio,
-                                 'words': [{'start': w.start+start, 'end': w.end+start, 'text': w.word, 'probability': w.probability} for w in s.words or []]})
+                if job['model']=='qwen3':
+                    result=model.transcribe(samples, language={'zh':'Chinese','en':'English','auto':None}[job['language']],
+                                            context='、'.join(job['prompts']),return_timestamps=True,forced_aligner=aligner)
+                    rows=qwen_rows(result,start)
+                else:
+                    segments,_ = model.transcribe(samples, language=None if job['language']=='auto' else job['language'],
+                        beam_size=5, condition_on_previous_text=False, vad_filter=True, word_timestamps=True,
+                        initial_prompt='、'.join(job['prompts']) or None)
+                    rows = []
+                    for s in segments:
+                        rows.append({'start': s.start, 'end': s.end, 'text': s.text, 'avg_logprob': s.avg_logprob,
+                                     'compression_ratio': s.compression_ratio,
+                                     'words': [{'start': w.start+start, 'end': w.end+start, 'text': w.word, 'probability': w.probability} for w in s.words or []]})
                 saved = {'start': start, 'end': end, 'segments': rows}
                 atomic_json(checkpoint, saved)
                 chunks.append(saved)
@@ -89,8 +151,8 @@ def run(store, job_id):
                 if raw['text']==merged[-1]['raw_text']: continue
                 start=merged[-1]['end'];reasons.append('分段交界，建議回聽')
             if end<=start or not all(math.isfinite(v) for v in (start,end)):continue
-            if raw['avg_logprob'] < -1:reasons.append('辨識把握較低')
-            if raw['compression_ratio'] > 2.4:reasons.append('疑似重複文字')
+            if raw['avg_logprob'] is not None and raw['avg_logprob'] < -1:reasons.append('辨識把握較低')
+            if raw['compression_ratio'] is not None and raw['compression_ratio'] > 2.4:reasons.append('疑似重複文字')
             traditional = convert(raw['text']).strip()
             for old,new in [('隻要','只要'),('隻有','只有'),('隻是','只是'),('隻能','只能')]:traditional=traditional.replace(old,new)
             merged.append({'id':len(merged), 'start':start, 'end':end, 'raw_text':raw['text'],

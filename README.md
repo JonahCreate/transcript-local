@@ -32,7 +32,7 @@
 
 `setup.sh` 使用 uv 管理 Python 3.12 與鎖定依賴；不需要修改系統 Python，並安裝 `tr`、`iht` 與 `transcript-local` 入口；如有同名檔案會保留並提示。必要時在 `~/.zshrc` 加入 `~/.local/bin` 路徑。`start.sh` 使用已安裝環境，不需要每次上網更新依賴。
 
-在終端機選單選擇「開啟網頁工作台」後，到「環境與模型」確認模型。工具會自動辨識可用的 Hugging Face 模型快取；若模型尚未下載，再選擇並下載模型。Medium 建議一般中文錄音使用；Small 較輕量。大小僅為估計，請以下載實際用量為準。下載來源為 Hugging Face 的 Systran faster-whisper 模型，模型與程式有各自授權。
+在終端機選單選擇「開啟網頁工作台」後，到「環境與模型」確認模型。工具會自動辨識可用的 Hugging Face 模型快取；若模型尚未下載，再選擇並下載模型。Whisper Medium 是一般中文錄音的預設選擇；Small 較輕量；Qwen3-ASR 1.7B 適合想嘗試不同辨識結果時使用，額外需要時間對齊模型。Qwen 兩個模型合計約 4 GB，已下載部分可沿用。大小僅為估計，請以下載實際用量為準。各模型品質依錄音而異，請回聽確認。
 
 ## 操作
 
@@ -65,7 +65,9 @@
 ```sh
 .venv/bin/transcript-local doctor
 .venv/bin/transcript-local download-model small
+.venv/bin/transcript-local download-model qwen3
 .venv/bin/transcript-local transcribe "/完整路徑/錄音.m4a" --model small
+.venv/bin/transcript-local transcribe "/完整路徑/錄音.m4a" --model qwen3
 .venv/bin/transcript-local transcribe "/完整路徑/資料夾" --recursive
 .venv/bin/transcript-local transcribe "/完整路徑/錄音.m4a" --enhance --force
 ```
@@ -88,7 +90,7 @@ CLI 預設把匯出存到任務的 `exports/`；可用 `--output-dir "/匯出目
 - `jobs/*/drafts/`：各視窗獨立草稿，與正式校稿分開。
 - `trash/`：「清除」的任務，可手動還原；尚未永久刪除，所以仍占空間。
 
-網頁選檔會把副本串流傳給**同一台電腦**的服務，不送到雲端；單檔上限 20 GB。辨識僅讀本機模型或既有 Hugging Face 快取，不自動下載；續跑時會使用任務原本的模型版本。程式使用 CPU int8，第一版不做 Metal/GPU 加速。
+網頁選檔會把副本串流傳給**同一台電腦**的服務，不送到雲端；單檔上限 20 GB。辨識僅讀本機模型或既有 Hugging Face 快取，不自動下載；續跑時會使用任務原本的辨識與時間對齊模型版本。Whisper 使用 CPU int8，Qwen 使用 Apple Silicon 的 MLX/Metal GPU。Qwen 時間戳依語音對齊估算，校稿時仍應回聽確認。
 
 服務只綁定 `127.0.0.1`，啟動連結含一次工作階段憑證，請勿分享。憑證交換成 HttpOnly、SameSite cookie 後，會從網址移除。程式不載入外部字型、分析追蹤或 CDN 資源。模型下載會連線 Hugging Face，但不附帶錄音。
 
