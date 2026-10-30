@@ -112,7 +112,7 @@ class Manager:
                 try:
                     log=(path/'worker.log').open('ab')
                     env=dict(os.environ,HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
-                    self.proc=subprocess.Popen([sys.executable,'-m','transcript_local.worker',str(self.store.root),job['id']],stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
+                    self.proc=subprocess.Popen([sys.executable,'-m','transcript_local.worker',str(self.store.root),job['id']],stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
                 except Exception as exc:
                     job['status']='failed';job['error']=str(exc);self.store.save(job);self.current=None
                     if 'log' in locals():log.close()

@@ -132,10 +132,14 @@ def test_video_without_audio(store,tmp_path):
 def test_real_process_cancel_and_queue_continues(store,wav,monkeypatch):
     import transcript_local.manager as module
     real=subprocess.Popen
+    bad_stdin=(store.root/'unreadable-stdin').open('wb')
     def worker(command,**kw):
+        # Simulate a parent whose terminal input is no longer readable.
+        kw.setdefault('stdin',bad_stdin)
         # The first attempt sleeps; resume observes its checkpoint and finishes.
         root,job_id=command[-2:]
         script="""import sys,time,json,pathlib
+assert sys.stdin.read() == ''
 p=pathlib.Path(sys.argv[1])/'jobs'/sys.argv[2]
 if not (p/'checkpoint').exists():
  (p/'checkpoint').write_text('saved');time.sleep(30)
@@ -157,7 +161,9 @@ if not (p/'checkpoint').exists():
         deadline=time.time()+8
         while store.get(j['id'])['status']!='complete' and time.time()<deadline:time.sleep(.05)
         assert store.get(j['id'])['status']=='complete'
-    finally:m.close()
+    finally:
+        m.close()
+        bad_stdin.close()
 
 def test_reimport_interrupted_job_resumes_instead_of_starting_new(store,wav):
     m=Manager(store);j=m.import_file(wav,model='small')

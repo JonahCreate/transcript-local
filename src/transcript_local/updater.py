@@ -31,7 +31,7 @@ class Updater:
 
     def _run(self):
         try:
-            result = subprocess.run([str(self.project / 'update.sh')], cwd=self.project, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+            result = subprocess.run([str(self.project / 'update.sh')], cwd=self.project, stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
             if result.returncode:
                 raise RuntimeError(result.stdout[-3000:] or '更新失敗')
             self.state = {'status': 'complete', 'message': '更新完成，正在重新開啟。'}
