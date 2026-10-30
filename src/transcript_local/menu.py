@@ -1,3 +1,4 @@
+from http.client import HTTPException as HTTPReadError
 import curses
 import sys
 import time
@@ -58,7 +59,7 @@ def _screen(screen, store):
         if time.monotonic() - last > 2:
             info = healthy(store)
             try: jobs = request(info, '/api/jobs') if info else []
-            except (OSError, ValueError): jobs = []
+            except (OSError, ValueError, HTTPReadError): jobs = []
             last = time.monotonic()
         screen.erase()
         for i, line in enumerate(LOGO): put(i, line, curses.color_pair(1) if curses.has_colors() else curses.A_BOLD)
@@ -93,7 +94,7 @@ def _screen(screen, store):
                         if confirm(str(exc) + ' 確定強制停止？'): message = stop(store, True)
                         else: message = str(exc)
             last = 0
-        except (RuntimeError, OSError, ValueError) as exc:
+        except (RuntimeError, OSError, ValueError, HTTPReadError) as exc:
             message = str(exc)
 
 
@@ -103,7 +104,7 @@ def progress(screen,store):
     while True:
         info=healthy(store)
         try:jobs=request(info,'/api/jobs') if info else []
-        except (OSError,ValueError):jobs=[]
+        except (OSError,ValueError,HTTPReadError):jobs=[]
         height,width=screen.getmaxyx();screen.erase()
         lines=['IHT · 轉錄任務進度','Esc 回選單 · ↑↓ 捲動 · 每秒更新','']
         if not info:lines.append('服務尚未啟動；回選單開啟工作台。')

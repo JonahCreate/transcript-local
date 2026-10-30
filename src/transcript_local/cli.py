@@ -1,3 +1,4 @@
+from http.client import HTTPException as HTTPReadError
 import argparse
 import os
 import platform
@@ -141,7 +142,7 @@ def main(argv=None):
 def entrypoint():
     try:return main()
     except KeyboardInterrupt:return 0
-    except (RuntimeError,ValueError,OSError) as exc:
+    except (RuntimeError,ValueError,OSError,HTTPReadError) as exc:
         print('無法完成操作：'+str(exc),file=sys.stderr)
         return 1
 

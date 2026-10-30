@@ -1,3 +1,4 @@
+from http.client import HTTPException as HTTPReadError
 """On-demand macOS service controller. No PID from disk is ever signalled."""
 import fcntl
 import hashlib
@@ -39,13 +40,13 @@ def request(info, path='/api/health', body=None):
 
 def healthy(store):
     try:info = read_json(runtime(store) / 'service.json', {})
-    except (OSError,ValueError):return None
+    except (OSError,ValueError,HTTPReadError):return None
     if not isinstance(info,dict):return None
     try:
         result = request(info)
         if result.get('ready') and result['instance_id'] == info['instance_id'] and result['data_path'] == str(store.root):
             return info
-    except (OSError, ValueError, KeyError, RuntimeError):
+    except (OSError, ValueError, KeyError, RuntimeError, HTTPReadError):
         pass
     return None
 

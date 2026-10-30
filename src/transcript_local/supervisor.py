@@ -1,3 +1,4 @@
+from http.client import HTTPException as HTTPReadError
 """Stable stdlib-only service supervisor, executed outside the application venv."""
 import fcntl
 import json
@@ -17,7 +18,7 @@ import urllib.request
 
 def read(path, default=None):
     try: return json.loads(path.read_text())
-    except (OSError, ValueError): return default
+    except (OSError, ValueError, HTTPReadError): return default
 
 
 def write(path, value):
@@ -80,7 +81,7 @@ class Supervisor:
             if self.child and self.child.poll() is None and info.get('pid') == self.child.pid:
                 result = api(info)
                 if result.get('ready') and result['instance_id'] == info['instance_id'] and result['data_path'] == str(self.root): return info
-        except (OSError, ValueError, KeyError): pass
+        except (OSError, ValueError, KeyError, HTTPReadError): pass
         return None
 
     def launch(self, current, recover=False, timeout=35):
@@ -176,7 +177,7 @@ class Supervisor:
                         info = read(root / 'runtime/service.json', {})
                         try:
                             if info.get('pid') == proc.pid and api(info)['data_path'] == str(root): return
-                        except (OSError, ValueError, KeyError): pass
+                        except (OSError, ValueError, KeyError, HTTPReadError): pass
                         time.sleep(.2)
                     raise RuntimeError('新版啟動驗證失敗，保留目前版本。')
                 finally:
@@ -243,7 +244,7 @@ class Supervisor:
         info=self.health()
         if info:
             try:api(info,'/api/update/unlock',{'secret':self.secret})
-            except (OSError,ValueError):pass
+            except (OSError,ValueError,HTTPReadError):pass
 
     def run(self):
         with (self.rt / 'supervisor.lock').open('a') as lock:
@@ -294,6 +295,7 @@ class Supervisor:
                             self.stopping = True; continue
                         write(self.rt / 'recovery.json', {'last_restart': time.time()})
                         if not self.launch(read(self.rt / 'current.json'), recover=True):
+                            self.state('failed', '服務再次異常停止，已停止自動恢復。請查看 service.log。')
                             self.terminate(force=True); self.stopping = True
                 time.sleep(.2)
             if self.child and self.child.poll() is None: self.terminate()

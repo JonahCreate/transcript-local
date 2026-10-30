@@ -176,3 +176,19 @@ def test_menu_accepts_terminal_arrow_and_number(store):
     finally:
         if proc.poll() is None:proc.kill();proc.wait(timeout=5)
         os.close(master)
+
+
+def test_partial_health_response_is_unhealthy(store,monkeypatch):
+    from http.client import IncompleteRead
+    import transcript_local.service as client
+    import transcript_local.supervisor as daemon
+    rt=runtime(store)
+    atomic_json(rt/'service.json',{'pid':1234,'port':1234,'token':'test','instance_id':'test'})
+    atomic_json(rt/'config.json',{'source':str(Path.cwd())})
+    def partial(*args,**kwargs):raise IncompleteRead(b'',100)
+    monkeypatch.setattr(client,'request',partial)
+    assert client.healthy(store) is None
+    supervisor=daemon.Supervisor(store.root)
+    supervisor.child=SimpleNamespace(pid=1234,poll=lambda:None)
+    monkeypatch.setattr(daemon,'api',partial)
+    assert supervisor.health() is None
