@@ -50,7 +50,7 @@ async function refreshStatus() {
   }));updateSubmit();
 }
 async function refreshJobs() {
-  const jobs=await api('/jobs');state.jobs=jobs;$('job-count').textContent=jobs.length; const key=JSON.stringify([state.current,jobs]); if(key===state.jobsKey)return; state.jobsKey=key;
+  const jobs=await api('/jobs');if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length; const key=JSON.stringify([state.current,jobs]); if(key===state.jobsKey)return; state.jobsKey=key;
   if (!jobs.length){$('jobs').replaceChildren(el('p','第一份逐字稿，從一段錄音開始。','empty-small'));return;}
   $('jobs').replaceChildren(...jobs.map(j=>{
     const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));item.append(title,el('div',`${statusLabels[j.status]||j.status} · ${j.model}`,'job-meta'));
