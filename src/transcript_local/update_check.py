@@ -8,7 +8,7 @@ OFFICIAL = 'https://github.com/JonahCreate/transcript-local.git'
 
 def check_remote(current):
     if not re.fullmatch(r'[0-9a-f]{40}', current or ''):
-        return {'check_status':'unknown','can_update':False,'check_message':'目前是本機開發版本，無法確認是否需要更新。','current_revision':current}
+        return {'check_status':'unknown','can_update':False,'check_message':'無法確認目前安裝版本。請先儲存校稿並停止服務，再到專案資料夾執行 ./setup.sh。','current_revision':current}
     try:
         result=subprocess.run(['git','ls-remote',OFFICIAL,'refs/heads/main'],stdin=subprocess.DEVNULL,
                               capture_output=True,text=True,timeout=15,env=dict(os.environ,GIT_TERMINAL_PROMPT='0'))

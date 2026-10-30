@@ -4,8 +4,18 @@ import os
 import shutil
 from pathlib import Path
 import shlex
+import subprocess
 
 MARKER = '# IHT managed launcher'
+
+def install_revision(project):
+    """Identify the installed code without treating unrelated personal files as changes."""
+    head=subprocess.run(['git','rev-parse','HEAD'],cwd=project,capture_output=True,text=True)
+    if head.returncode:return 'installed'
+    status=subprocess.run(['git','status','--porcelain','--untracked-files=all','--',
+                           'src/transcript_local','pyproject.toml','uv.lock'],cwd=project,capture_output=True,text=True)
+    if status.returncode:return 'installed'
+    return head.stdout.strip()+('-local' if status.stdout.strip() else '')
 
 
 def install(project, home=None):
@@ -42,14 +52,11 @@ def main():
     from .service import runtime, busy_lease, _supervisor_registered
     store=Store();rt=runtime(store)
     if not busy_lease(store) and not _supervisor_registered(store):
-        import subprocess
-        revision=subprocess.run(['git','rev-parse','HEAD'],cwd=args.project,capture_output=True,text=True).stdout.strip() or 'installed'
-        dirty=subprocess.run(['git','status','--porcelain'],cwd=args.project,capture_output=True,text=True).stdout.strip()
-        if dirty:revision+='-local'
+        revision=install_revision(args.project)
         previous=read_json(rt/'current.json')
         if previous:atomic_json(rt/'previous-install.json',previous)
         atomic_json(rt/'current.json',{'project':str(Path(args.project).resolve()),'python':str(Path(args.project).resolve()/'.venv/bin/python'),'revision':revision})
-    else:print('現有服務仍保留；請儲存校稿並停止後，再從 tr 選單啟動新版。')
+    else:print('現有服務仍在執行，尚未切換安裝版本。請先儲存校稿並停止服務，再重新執行 ./setup.sh。')
     print('IHT 指令已設定；重新開啟終端機後輸入 tr。')
     if conflicts: print('名稱已被使用或由 shell 保留，未覆蓋：' + ', '.join(conflicts) + '。可使用專案 start.sh menu / stop [--force]。')
 

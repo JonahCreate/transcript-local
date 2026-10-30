@@ -1,8 +1,53 @@
 from types import SimpleNamespace
 import pytest
+import subprocess
 from transcript_local.update_check import check_remote
 from transcript_local.updater import Updater
 from transcript_local.manager import Manager
+
+def test_install_revision_ignores_unrelated_files_but_detects_code_changes(tmp_path):
+    from transcript_local.install_commands import install_revision
+    def git(*args):
+        return subprocess.run(['git',*args],cwd=tmp_path,check=True,capture_output=True,text=True).stdout.strip()
+    git('init');git('config','user.email','test@example.invalid');git('config','user.name','Test')
+    source=tmp_path/'src'/'transcript_local';source.mkdir(parents=True)
+    (source/'app.py').write_text('original')
+    (tmp_path/'pyproject.toml').write_text('original')
+    git('add','.');git('commit','-m','initial')
+    revision=git('rev-parse','HEAD')
+    (tmp_path/'personal-notes.txt').write_text('unrelated')
+    assert install_revision(tmp_path)==revision
+    (source/'app.py').write_text('modified')
+    assert install_revision(tmp_path)==revision+'-local'
+    (source/'app.py').write_text('original')
+    (source/'extra.py').write_text('untracked code')
+    assert install_revision(tmp_path)==revision+'-local'
+
+def test_install_with_live_service_explains_how_to_finish(store,tmp_path,monkeypatch,capsys):
+    from transcript_local import install_commands, service
+    from transcript_local.store import atomic_json, read_json
+    rt=service.runtime(store);current={'revision':'installed','project':'old','python':'old'}
+    atomic_json(rt/'current.json',current)
+    monkeypatch.setenv('TRANSCRIPT_LOCAL_DATA',str(store.root))
+    monkeypatch.setattr(install_commands,'install',lambda project:[])
+    monkeypatch.setattr(service,'busy_lease',lambda store:True)
+    monkeypatch.setattr('sys.argv',['install_commands','--project',str(tmp_path)])
+    install_commands.main()
+    assert read_json(rt/'current.json')==current
+    assert '停止服務' in capsys.readouterr().out
+
+def test_stop_waits_for_supervisor_to_exit_before_reporting_success(store,monkeypatch):
+    from transcript_local import service
+    from transcript_local.store import atomic_json
+    rt=service.runtime(store);atomic_json(rt/'supervisor.json',{'secret':'test'})
+    states=iter([True,True,False]);calls=[]
+    def registered(_):
+        calls.append(True);return next(states)
+    monkeypatch.setattr(service,'_supervisor_registered',registered)
+    monkeypatch.setattr(service,'busy_lease',lambda _:False)
+    monkeypatch.setattr(service.time,'sleep',lambda _:None)
+    assert '已停止' in service.stop(store)
+    assert len(calls)==3
 
 
 @pytest.mark.parametrize('remote,expected',[('a'*40,False),('b'*40,True)])

@@ -34,6 +34,8 @@ repo=$(osascript -e 'POSIX path of (choose folder with prompt "請選擇 transcr
 
 從選單或網頁按「更新程式」，先儲存各視窗的修改，並等待轉錄及模型下載完成。新版在獨立環境安裝、驗證後才切換；失敗會保留原服務或恢復上一版本。更新需要網路，完成後會開啟新網頁。
 
+若出現無法確認目前安裝版本的訊息，先儲存校稿並使用 `iht stop` 停止服務，再到專案資料夾執行 `./setup.sh`，接著重新輸入 `tr`。若程式檔案有自行修改，請先保留修改並確認版本；不要直接刪除檔案或強制覆蓋。
+
 資料仍在 `~/Library/Application Support/transcript-local/`。`runtime/` 保存服務紀錄、日誌、版本環境與更新前的設定／校稿備份。分享日誌前檢查私人資訊，勿分享 `service.json` 或 `supervisor.json`，其中含本機驗證資訊。
 
 這是開發中試用版，外部使用者完成驗收前，不宣稱為穩定版。

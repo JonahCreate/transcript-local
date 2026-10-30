@@ -122,7 +122,7 @@ def stop(store, force=False):
     atomic_json(rt / 'control.json', {'secret': control['secret'], 'action': 'force' if force else 'stop'})
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        if not busy_lease(store): return '逐字稿工具已停止，完成片段已保留。'
+        if not busy_lease(store) and not _supervisor_registered(store): return '逐字稿工具已停止，完成片段已保留。'
         time.sleep(.2)
     raise RuntimeError('服務尚未停止。可輸入 iht stop --force 或 transcript-local stop --force。')
 
