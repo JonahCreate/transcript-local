@@ -151,6 +151,8 @@ class Supervisor:
         if current.get('revision')==revision:return current
         release = self.rt / 'releases' / revision
         if not (release / '.ready').exists():
+            if current.get('project') and Path(current['project']).resolve() == release.resolve():
+                raise RuntimeError('目前使用的版本目錄不完整，為保護原有程式與修改，停止更新。')
             if release.exists(): shutil.rmtree(release)
             release.mkdir(parents=True)
             with tempfile.TemporaryDirectory(dir=self.rt) as temporary:

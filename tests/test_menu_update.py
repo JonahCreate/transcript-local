@@ -27,3 +27,14 @@ def test_terminal_confirm_only_when_available_and_idle(store,monkeypatch):
     checked,message=terminal_update(store,info,0,lambda text:True,lambda text:None)
     assert calls==['/api/update/check','/api/update']
     assert message=='queued'
+
+def test_terminal_repair_requests_confirmation(store,monkeypatch):
+    calls=[]
+    def request(instance,path,body):
+        calls.append(path)
+        return {'check_status':'repair_available','can_update':True} if path.endswith('/check') else {'status':'requested','message':'queued'}
+    monkeypatch.setattr('transcript_local.menu.request',request)
+    prompts=[]
+    terminal_update(store,{'port':1},0,lambda text:prompts.append(text) or True,lambda text:None)
+    assert '修復' in prompts[0]
+    assert calls==['/api/update/check','/api/update']

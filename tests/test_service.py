@@ -21,6 +21,18 @@ def wait_for(check, timeout=15):
         time.sleep(.1)
     raise AssertionError('Timed out')
 
+def test_update_never_deletes_current_incomplete_release(store,monkeypatch):
+    rt=runtime(store);revision='a'*40;release=rt/'releases'/revision
+    release.mkdir(parents=True);marker=release/'my-changes';marker.write_text('keep')
+    atomic_json(rt/'config.json',{'source':str(Path.cwd())})
+    atomic_json(rt/'current.json',{'project':str(release),'revision':revision+'-local'})
+    supervisor=Supervisor(store.root)
+    monkeypatch.setattr(supervisor,'command',lambda *a,**k:None)
+    monkeypatch.setattr(subprocess,'check_output',lambda args,**kw:'https://github.com/JonahCreate/transcript-local.git\n' if 'remote' in args else revision+'\n')
+    with pytest.raises(RuntimeError,match='保護'):
+        supervisor.prepare()
+    assert marker.read_text()=='keep'
+
 
 @pytest.fixture
 def supervised(store):

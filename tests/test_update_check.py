@@ -67,6 +67,18 @@ def test_unreachable_is_not_reported_latest(monkeypatch):
     assert check_remote('a'*40)['check_status']=='check_failed'
     assert not check_remote('local-build')['can_update']
 
+def test_unknown_installed_revision_offers_official_repair_without_assuming_update(monkeypatch):
+    monkeypatch.setattr('transcript_local.update_check.subprocess.run',lambda *a,**k:SimpleNamespace(returncode=0,stdout='b'*40+'\trefs/heads/main\n'))
+    result=check_remote('installed')
+    assert result['check_status']=='repair_available' and result['can_update']
+    assert '修復' in result['check_message']
+    local=check_remote('a'*40+'-local')
+    assert local['can_update'] and '原專案修改會保留' in local['check_message']
+
+def test_unknown_installed_revision_requires_network(monkeypatch):
+    monkeypatch.setattr('transcript_local.update_check.subprocess.run',lambda *a,**k:SimpleNamespace(returncode=1,stdout=''))
+    assert check_remote('installed')['check_status']=='check_failed'
+
 
 def test_current_version_does_not_queue_or_lock(store,monkeypatch):
     monkeypatch.setenv('IHT_MANAGED','1')

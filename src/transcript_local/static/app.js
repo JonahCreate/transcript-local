@@ -172,8 +172,9 @@ $('update-button').onclick=protect(async()=>{
     const current=await api('/update/check',{method:'POST'});state.checking=false;renderUpdate(current);
     if(!current.can_update){notify(current.check_message);return;}
     if(!current.available){notify('請從 tr 選單開啟背景服務，才能安全更新。');return;}
-    if(state.dirty){await flushDraft();notify('有新版；請先儲存修改，再更新。');return;}
-    if(!confirm('有新版本可以更新。請確認所有視窗的修改都已儲存。開始下載安裝嗎？'))return;
+    const repair=current.check_status==='repair_available';
+    if(state.dirty){await flushDraft();notify('請先儲存修改，再更新或修復。');return;}
+    if(!confirm(repair?`${current.check_message} 請確認所有視窗的修改都已儲存。開始安裝嗎？`:'有新版本可以更新。請確認所有視窗的修改都已儲存。開始下載安裝嗎？'))return;
     const result=await api('/update',{method:'POST'});
     state.updating=['requested','preparing','validating','switching'].includes(result.status);
     renderUpdate(result);
@@ -182,7 +183,7 @@ $('update-button').onclick=protect(async()=>{
 function renderUpdate(update){
   const active=['requested','preparing','validating','switching'].includes(update.status);
   $('update-button').disabled=active||state.checking;
-  $('update-button').textContent=state.checking?'檢查中…':active?'更新中…':update.can_update?'↑ 有新版':update.check_status==='up_to_date'?'✓ 已是最新':'↻ 檢查更新';
+  $('update-button').textContent=state.checking?'檢查中…':active?'更新中…':update.check_status==='repair_available'?'↻ 修復版本':update.can_update?'↑ 有新版':update.check_status==='up_to_date'?'✓ 已是最新':'↻ 檢查更新';
   $('update-button').title=update.check_message||'檢查是否有新版本';
   $('update-message').textContent=active?update.message:update.check_message||update.message||'';
 }

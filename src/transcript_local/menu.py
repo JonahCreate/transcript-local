@@ -141,10 +141,12 @@ def terminal_update(store,info,active,confirm,show):
         checked=check_remote(current.get('revision',''))
     if not checked.get('can_update'):
         return checked,checked.get('check_message','目前無法確認版本。')
+    repair=checked.get('check_status')=='repair_available'
     if active:
-        return checked,'有新版本；請先等待任務完成或停止任務。'
-    show('發現新版本。確認後才會下載與安裝。')
-    if not confirm('有新版；確認所有網頁修改已儲存，開始安裝？'):
+        return checked,'請先等待任務完成或停止任務，再更新或修復。'
+    show('可以修復版本資訊。確認後才會下載與安裝。' if repair else '發現新版本。確認後才會下載與安裝。')
+    prompt=(checked.get('check_message','')+' 確認校稿已儲存，開始修復？') if repair else '有新版；確認所有網頁修改已儲存，開始安裝？'
+    if not confirm(prompt):
         return checked,'已取消安裝；目前版本繼續使用。'
     info=info or ensure(store,False)
     result=request(info,'/api/update',{})

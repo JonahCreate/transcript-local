@@ -218,3 +218,13 @@ def test_browser_current_version_only_checks(review_page):
     expect(page.locator('#update-button')).to_have_text('✓ 已是最新')
     assert not updates
     expect(page.locator('#save')).to_be_disabled()
+
+def test_browser_offers_repair_for_unknown_installed_revision(review_page):
+    import json
+    page=review_page;updates=[]
+    page.on('request',lambda r:updates.append(r.url) if r.method=='POST' and r.url.endswith('/api/update') else None)
+    page.route('**/api/update/check',lambda route:route.fulfill(content_type='application/json',body=json.dumps({'status':'idle','available':True,'can_update':True,'check_status':'repair_available','check_message':'無法確認目前版本，可安裝官方最新版本修復。'})))
+    page.route('**/api/update',lambda route:route.fulfill(content_type='application/json',body=json.dumps({'status':'requested','message':'準備修復'})))
+    page.locator('#update-button').click()
+    expect(page.locator('#update-button')).to_have_text('更新中…')
+    assert len(updates)==1
