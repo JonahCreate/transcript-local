@@ -114,3 +114,14 @@ def test_browser_restores_long_review_scroll(review_page,store,browser_job):
     page.reload()
     expect(page.locator('#segments textarea')).to_have_count(45)
     wait_for(lambda:page.locator('#segments').evaluate('(node)=>node.scrollTop')>500)
+
+
+def test_browser_current_version_only_checks(review_page):
+    import json
+    page=review_page;updates=[]
+    page.on('request',lambda r:updates.append(r.url) if r.method=='POST' and r.url.endswith('/api/update') else None)
+    page.route('**/api/update/check',lambda route:route.fulfill(content_type='application/json',body=json.dumps({'status':'idle','available':True,'can_update':False,'check_status':'up_to_date','check_message':'已是最新版本。'})))
+    page.locator('#update-button').click()
+    expect(page.locator('#update-button')).to_have_text('✓ 已是最新')
+    assert not updates
+    expect(page.locator('#save')).to_be_disabled()

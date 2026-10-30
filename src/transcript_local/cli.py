@@ -49,8 +49,10 @@ def main(argv=None):
         ensure(store);print('已開啟工作台。');return 0
     if args.command=='update':
         from .service import ensure, request
-        request(ensure(store,False),'/api/update',{})
-        print('更新已開始；請從選單開啟工作台查看進度。');return 0
+        info=ensure(store,False);checked=request(info,'/api/update/check',{})
+        if not checked.get('can_update'):print(checked.get('check_message','無法確認版本。'));return 0
+        result=request(info,'/api/update',{})
+        print(result.get('message') or result.get('check_message'));return 0
     if args.command=='stop':
         from .service import stop
         print(stop(store,args.force));return 0

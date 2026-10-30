@@ -164,12 +164,17 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
     @app.get('/api/update',dependencies=[Depends(auth)])
     def update_status():return updater.status()
 
+    @app.post('/api/update/check',dependencies=[Depends(auth)])
+    def check_update():return updater.check()
+
     def writable():
         if manager.updating:raise ValueError('程式正在更新，請稍候')
 
     @app.post('/api/update',dependencies=[Depends(auth)],status_code=202)
-    def update_start():
-        with edit_lock:updater.start()
+    def update_start(response:Response):
+        checked=updater.check()
+        with edit_lock:started=updater.start(checked)
+        if not started:response.status_code=200
         return updater.status()
 
     @app.post('/api/models/download',dependencies=[Depends(auth)],status_code=202)

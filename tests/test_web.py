@@ -94,6 +94,7 @@ def test_audio_range_playback(client,store,wav):
     assert r.status_code==206;assert len(r.content)==44
 
 def test_managed_update_request_guards_and_unlock(client,store,wav,monkeypatch):
+    monkeypatch.setattr('transcript_local.updater.check_remote',lambda current:{'check_status':'update_available','can_update':True,'check_message':'有新版'})
     monkeypatch.setenv('IHT_MANAGED','1')
     atomic_json(store.root/'runtime/supervisor.json',{'secret':'supervisor-secret'})
     job=client.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
@@ -143,3 +144,14 @@ def test_health_authenticated_and_shutdown(store):
         assert c.get('/api/health').json()['ready']
         assert c.post('/api/service/stop').status_code==202
         assert done.wait(2)
+
+
+def test_no_update_is_noop_even_with_queued_job(client,store,wav,monkeypatch):
+    monkeypatch.setattr('transcript_local.updater.check_remote',lambda current:{'check_status':'up_to_date','can_update':False,'check_message':'已是最新版本。'})
+    job=client.post('/api/jobs',files={'file':('a.wav',wav.read_bytes())}).json()
+    result=client.post('/api/update')
+    assert result.status_code==200
+    assert not result.json()['can_update']
+    assert store.get(job['id'])['status']=='queued'
+    assert not (store.root/'runtime/update-request.json').exists()
+    assert client.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==200

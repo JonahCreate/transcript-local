@@ -6,7 +6,7 @@ from .service import ensure, healthy, request, stop, runtime, busy_lease
 from .store import read_json, ACTIVE
 
 LOGO = [r'  ___ _   _ _____', r' |_ _| |_| |_   _|', r'  | ||  _  | | |', r' |___|_| |_| |_|', '  I HATE TRANSCRIPTION.', '  Less typing. More living.']
-OPTIONS = ['開啟網頁工作台', '查看轉錄進度', '更新程式', '停止背景服務', '離開選單']
+OPTIONS = ['開啟網頁工作台', '查看轉錄進度', '檢查更新', '停止背景服務', '離開選單']
 
 
 def choice(key, selected):
@@ -69,7 +69,7 @@ def _screen(screen, store):
         update = read_json(runtime(store) / 'update.json', {})
         if update.get('status') in {'requested','preparing','validating','switching'}: state = '更新進行中';put(7,'● 更新進行中 · '+update.get('message',''))
         for i, option in enumerate(OPTIONS):
-            text = '等待任務完成後更新' if i == 2 and active else option
+            text = option
             if i==0 and not info and busy_lease(store):text='服務失去回應 · 檢查修復說明'
             put(9 + i, f'{"❯" if i == selected else " "} {i + 1}  {text}', curses.A_REVERSE if i == selected else 0)
         put(16, message[:300]); put(18, '↑↓ 選擇 · Enter 確認 · 數字快捷 · Esc 離開')
@@ -84,9 +84,11 @@ def _screen(screen, store):
             elif selected == 1:
                 progress(screen,store)
             elif selected == 2:
-                if active: message = '請先等待任務完成或停止任務。'; continue
+                info=ensure(store,False);checked=request(info,'/api/update/check',{})
+                if not checked.get('can_update'):message=checked.get('check_message','無法確認版本');continue
+                if active:message='有新版本；請先等待任務完成或停止任務。';continue
                 if confirm('確認所有網頁的修改都已儲存，開始更新？'):
-                    info = ensure(store, False); request(info, '/api/update', {}); message = '更新已開始；可到網頁查看進度。'
+                    result=request(info, '/api/update', {});message=result.get('message') if result.get('status')=='requested' else result.get('check_message','請查看工作台。')
             elif selected == 3:
                 if confirm(f'停止背景服務？目前有 {active} 個處理中任務，已完成片段會保留。'):
                     try: message = stop(store)

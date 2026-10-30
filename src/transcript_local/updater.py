@@ -1,5 +1,7 @@
 """Authenticated update requests handed to the independent supervisor."""
 import os
+import threading
+from .update_check import check_remote
 from .store import ACTIVE, atomic_json, read_json
 
 UPDATING = {'requested', 'preparing', 'validating', 'switching'}
@@ -9,12 +11,23 @@ class Updater:
         self.manager = manager
         self.models = models
         self.rt = manager.store.root / 'runtime'
+        self.check_lock=threading.Lock()
+        self.checked={'check_status':'not_checked','can_update':False,'check_message':'尚未檢查更新。'}
 
     def status(self):
         state = read_json(self.rt / 'update.json', {'status': 'idle', 'message': ''})
-        return {**state, 'available': os.environ.get('IHT_MANAGED') == '1' and (self.rt / 'supervisor.json').is_file()}
+        return {**state, **self.checked, 'available': os.environ.get('IHT_MANAGED') == '1' and (self.rt / 'supervisor.json').is_file()}
 
-    def start(self):
+    def check(self):
+        with self.check_lock:
+            self.checked=check_remote(os.environ.get('IHT_REVISION',''))
+        return self.status()
+
+    def start(self,checked=None):
+        result=self.check() if checked is None else checked
+        if not result['can_update']:
+            if result['check_status']=='up_to_date':return False
+            raise ValueError(result['check_message'])
         with self.manager.lock:
             if not self.status()['available']:
                 raise ValueError('請從 tr 選單開啟背景服務，才能使用安全更新。')
@@ -28,3 +41,4 @@ class Updater:
             self.manager.updating = True
             atomic_json(self.rt / 'update.json', {'status': 'requested', 'message': '已送出更新要求，正在準備。'})
             atomic_json(self.rt / 'update-request.json', {'secret': control['secret']})
+            return True

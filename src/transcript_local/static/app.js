@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {files: [], jobs: [], current: null, doc: null, dirty: false, status: null, busy: false, preview: null, authenticated: false, jobsKey: '', changed:new Set(), recoveredDraftIds:new Set(), updating:false, stopped:false, saving:false, opening:false};
+const state = {files: [], jobs: [], current: null, doc: null, dirty: false, status: null, busy: false, preview: null, authenticated: false, jobsKey: '', changed:new Set(), recoveredDraftIds:new Set(), updating:false, stopped:false, saving:false, opening:false, checking:false};
 const windowId=sessionStorage.getItem('iht-window')||crypto.randomUUID();sessionStorage.setItem('iht-window',windowId);
 let draftTimer, draftQueue=Promise.resolve(), positionTimer;
 const statusLabels = {queued:'排隊中',running:'處理中',cancelling:'停止中',cancelled:'已停止',interrupted:'可續跑',failed:'處理失敗',complete:'可校稿'};
@@ -135,6 +135,7 @@ async function init(){
   const g=await api('/glossary');$('prompts').value=g.prompts.join('\n');$('rules').value=g.rules.map(r=>r.from+' → '+r.to).join('\n');await refreshJobs();
   if(!state.status.models.some(m=>m.ready))changeView('setup');
   const prefs=await api('/preferences');const last=state.jobs.find(j=>j.id===prefs.job_id&&j.status==='complete');if(last)await openJob(last,prefs.position||0,prefs.segment_position||0);
+  state.checking=true;api('/update/check',{method:'POST'}).then(result=>{state.checking=false;renderUpdate(result);}).catch(()=>{state.checking=false;});
 }
 protect(init)();
 let polling=false;
@@ -142,18 +143,30 @@ setInterval(async()=>{if(!state.authenticated||polling||document.hidden||state.s
 setInterval(()=>{if(state.authenticated&&!state.stopped&&!document.hidden)protect(refreshStatus)();},20000);
 
 $('update-button').onclick=protect(async()=>{
-  if(state.dirty){await flushDraft();notify('草稿已備份；請先儲存正式修改，再更新。');return;}
-  const current=await api('/update');
-  if(!current.available){notify('請從 tr 選單開啟背景服務，才能安全更新。');return;}
-  if(!confirm('更新需要網路；完成後會重新開啟網頁。請確認所有視窗的修改都已儲存。開始嗎？'))return;
-  await api('/update',{method:'POST'});state.updating=true;
-  $('update-button').disabled=true;await refreshUpdate();
+  if(state.checking)return;state.checking=true;
+  $('update-button').disabled=true;$('update-button').textContent='檢查中…';
+  try {
+    const current=await api('/update/check',{method:'POST'});state.checking=false;renderUpdate(current);
+    if(!current.can_update){notify(current.check_message);return;}
+    if(!current.available){notify('請從 tr 選單開啟背景服務，才能安全更新。');return;}
+    if(state.dirty){await flushDraft();notify('有新版；請先儲存修改，再更新。');return;}
+    if(!confirm('有新版本可以更新。請確認所有視窗的修改都已儲存。開始下載安裝嗎？'))return;
+    const result=await api('/update',{method:'POST'});
+    state.updating=['requested','preparing','validating','switching'].includes(result.status);
+    renderUpdate(result);
+  } finally {state.checking=false;if(!state.updating)$('update-button').disabled=false;}
 });
+function renderUpdate(update){
+  const active=['requested','preparing','validating','switching'].includes(update.status);
+  $('update-button').disabled=active||state.checking;
+  $('update-button').textContent=state.checking?'檢查中…':active?'更新中…':update.can_update?'↑ 有新版':update.check_status==='up_to_date'?'✓ 已是最新':'↻ 檢查更新';
+  $('update-button').title=update.check_message||'檢查是否有新版本';
+  $('update-message').textContent=active?update.message:update.check_message||update.message||'';
+}
 async function refreshUpdate(){
   const update=await api('/update');
   const active=['requested','preparing','validating','switching'].includes(update.status);
-  const wasUpdating=state.updating;state.updating=active;updateSubmit();$('save').disabled=active||state.saving||!state.dirty;$('update-button').disabled=active;$('update-button').textContent=active?'更新中…':'↻ 更新程式';
-  $('update-message').textContent=update.message||'';
+  const wasUpdating=state.updating;state.updating=active;updateSubmit();$('save').disabled=active||state.saving||!state.dirty;renderUpdate(update);
   if(active&&state.dirty)await flushDraft();
   if(wasUpdating&&!active&&['complete','rolled_back'].includes(update.status)){if(state.dirty){await flushDraft();state.dirty=false;}location.reload();}
 }
