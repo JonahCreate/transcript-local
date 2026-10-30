@@ -69,11 +69,11 @@ async function openJob(j,position=0,segmentPosition=0){
   if(state.saving||state.opening){notify('正在儲存或載入，請稍候。');return;}
   if(j.status!=='complete'){notify(j.error||j.progress?.message||'任務完成後即可校稿。');return;}
   if(state.dirty){await flushDraft();if(!confirm('修改已備份為草稿，仍要切換稿件嗎？'))return;}
-  state.opening=true;try {
+  state.opening=true;$('editor').hidden=true;$('editor-empty').hidden=false;try {
   const doc=await api(`/jobs/${j.id}/transcript`);state.current=j.id;state.doc=doc;state.dirty=false;state.changed.clear();state.recoveredDraftIds.clear();
   await api('/preferences',{method:'PUT',body:{job_id:j.id,position,segment_position:segmentPosition}});
-  $('editor-empty').hidden=true;$('editor').hidden=false;$('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
-  renderSegments();renderExports();await loadDrafts();await refreshJobs();window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
+  $('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
+  renderSegments();renderExports();await loadDrafts();await refreshJobs();$('editor-empty').hidden=true;$('editor').hidden=false;window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
   }finally{state.opening=false;}
 }
 function renderSegments(){

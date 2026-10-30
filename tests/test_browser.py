@@ -108,6 +108,7 @@ def test_browser_restores_long_review_scroll(review_page,store,browser_job):
     doc['segments']=[{**template,'id':i,'start':i*2,'end':i*2+1,'traditional_text':f'測試片段 {i}'} for i in range(45)]
     atomic_json(path,doc);page.reload()
     expect(page.locator('#segments textarea')).to_have_count(45)
+    expect(page.locator('#segments textarea').first).to_be_visible()
     page.locator('#segments').evaluate('(node)=>{node.scrollTop=550;node.dispatchEvent(new Event("scroll"));}')
     wait_for(lambda:read_json(store.root/'preferences.json',{}).get('segment_position',0)>500)
     page.reload()
