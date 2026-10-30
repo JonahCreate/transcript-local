@@ -150,3 +150,29 @@ def test_current_version_update_does_not_restart_service(store,monkeypatch):
     supervisor.update()
     assert actions==['unlock']
     assert read_json(rt/'update.json')['status']=='complete'
+
+
+def test_menu_accepts_terminal_arrow_and_number(store):
+    import fcntl,pty,select,struct,termios
+    master,slave=pty.openpty()
+    fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,100,0,0))
+    env=dict(os.environ,TERM='xterm-256color')
+    proc=subprocess.Popen([sys.executable,'-m','transcript_local.cli','--data-dir',str(store.root),'menu'],stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)
+    os.close(slave)
+    try:
+        output=b'';deadline=time.monotonic()+5
+        while '開啟網頁工作台'.encode() not in output and time.monotonic()<deadline:
+            if select.select([master],[],[],.2)[0]:output+=os.read(master,10000)
+        assert 'I HATE TRANSCRIPTION' in output.decode(errors='replace')
+        os.write(master,b'\x1b[B');time.sleep(.15)
+        assert proc.poll() is None
+        os.write(master,b'5');deadline=time.monotonic()+5
+        while proc.poll() is None and time.monotonic()<deadline:
+            if select.select([master],[],[],.1)[0]:
+                try:output+=os.read(master,10000)
+                except OSError:break
+        proc.wait(timeout=2)
+        assert proc.returncode==0
+    finally:
+        if proc.poll() is None:proc.kill();proc.wait(timeout=5)
+        os.close(master)

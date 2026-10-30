@@ -15,12 +15,28 @@ def choice(key, selected):
     return selected, key in (10, 13, curses.KEY_ENTER)
 
 
+def read_key(screen):
+    key=screen.getch()
+    if key!=27:return key
+    # Accept both normal and application-cursor escape sequences.
+    screen.timeout(50)
+    first=screen.getch()
+    if first in (ord('['),ord('O')):
+        final=screen.getch()
+        key={ord('A'):curses.KEY_UP,ord('B'):curses.KEY_DOWN}.get(final,27)
+    screen.timeout(1000)
+    return key
+
+
 def menu(store):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print('I Hate Transcription — Less typing. More living.\n請在互動式終端機輸入 tr 使用選單。\n直接操作：transcript-local open / stop [--force] / doctor')
         return 0
     try: return curses.wrapper(_screen, store)
     except KeyboardInterrupt: return 0
+    except curses.error:
+        print("目前終端機不支援互動選單；可使用 iht open 或 iht stop。",file=sys.stderr)
+        return 1
 
 
 def _screen(screen, store):
@@ -56,7 +72,7 @@ def _screen(screen, store):
             if i==0 and not info and busy_lease(store):text='服務失去回應 · 檢查修復說明'
             put(9 + i, f'{"❯" if i == selected else " "} {i + 1}  {text}', curses.A_REVERSE if i == selected else 0)
         put(16, message[:300]); put(18, '↑↓ 選擇 · Enter 確認 · 數字快捷 · Esc 離開')
-        screen.refresh(); key = screen.getch()
+        screen.refresh(); key = read_key(screen)
         if key in (27, ord('q')): return 0
         selected, activate = choice(key, selected)
         if not activate: continue
@@ -99,7 +115,7 @@ def progress(screen,store):
         for i,line in enumerate(lines[offset:offset+height-1]):
             try:screen.addnstr(i,1,line,max(1,width-2))
             except curses.error:pass
-        screen.refresh();key=screen.getch()
+        screen.refresh();key=read_key(screen)
         if key in (27,ord('q')):return
         if key==curses.KEY_DOWN:offset=min(max(0,len(lines)-height+1),offset+1)
         if key==curses.KEY_UP:offset=max(0,offset-1)

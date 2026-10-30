@@ -51,7 +51,8 @@ def healthy(store):
 
 
 def busy_lease(store):
-    with (store.root / 'instance.lock').open('a') as lease:
+    path=store.root / 'instance.lock'
+    with path.open('r' if path.exists() else 'a') as lease:
         try:
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return False

@@ -138,7 +138,11 @@ def main(argv=None):
     finally:sock.close()
     return 0
 
-if __name__=='__main__':
-    try:sys.exit(main())
-    except (RuntimeError,ValueError) as e:
-        print(str(e),file=sys.stderr);sys.exit(1)
+def entrypoint():
+    try:return main()
+    except KeyboardInterrupt:return 0
+    except (RuntimeError,ValueError,OSError) as exc:
+        print('無法完成操作：'+str(exc),file=sys.stderr)
+        return 1
+
+if __name__=='__main__':sys.exit(entrypoint())

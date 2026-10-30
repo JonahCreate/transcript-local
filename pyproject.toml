@@ -23,7 +23,7 @@ test = [
 ]
 
 [project.scripts]
-transcript-local = "transcript_local.cli:main"
+transcript-local = "transcript_local.cli:entrypoint"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/transcript_local"]
