@@ -10,6 +10,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from .states import ACTIVE, RESUMABLE
 from .store import Store, SUPPORTED, atomic_json, read_json
 from .models import Models, available
 from .manager import Manager
@@ -83,7 +84,7 @@ def main(argv=None):
                 try:
                     job=manager.import_file(source,model=args.model,language=args.language,enhance=args.enhance,force=args.force)
                     ids.append(job['id'])
-                    if job['status'] in {'failed','cancelled','interrupted'}:manager.resume(job['id'])
+                    if job['status'] in RESUMABLE:manager.resume(job['id'])
                 except Exception as e:print(f'{source.name}：{e}',file=sys.stderr);failures+=1
             previous={}
             while True:
@@ -92,7 +93,7 @@ def main(argv=None):
                     job=store.get(job_id);progress=read_json(store.job_dir(job_id)/'progress.json',{})
                     message=f'{job["name"]}：{job["status"]} {progress.get("message", "")}'
                     if previous.get(job_id)!=message:print(message,flush=True);previous[job_id]=message
-                    pending |= job['status'] in {'queued','running','cancelling'}
+                    pending |= job['status'] in ACTIVE
                 if not pending:break
                 time.sleep(.5)
             for job_id in dict.fromkeys(ids):

@@ -10,7 +10,8 @@ import threading
 import time
 import shutil
 from pathlib import Path
-from .store import ACTIVE, atomic_json, clean_name, digest, now, read_json
+from .states import ACTIVE, RESUMABLE, move
+from .store import atomic_json, clean_name, digest, now, read_json
 from .models import resolve_model
 
 class Manager:
@@ -33,11 +34,11 @@ class Manager:
         for job in self.store.list():
             if job['status'] in ACTIVE:
                 if os.environ.get('IHT_RECOVER_CRASH')=='1' and job['status']=='running':
-                    job['status']='queued';job['error']='服務異常後自動恢復一次，接續完成片段'
+                    move(job,'queued');job['error']='服務異常後自動恢復一次，接續完成片段'
                 elif job['status']=='cancelling':
-                    job['status']='cancelled';job['error']=None
+                    move(job,'cancelled');job['error']=None
                 else:
-                    job['status']='interrupted';job['error']='上次程式已結束，按「續跑」接續已完成片段'
+                    move(job,'interrupted');job['error']='上次程式已結束，按「續跑」接續已完成片段'
                 self.store.save(job)
         self.thread=threading.Thread(target=self._loop,daemon=True)
         self.thread.start()
@@ -88,19 +89,19 @@ class Manager:
         with self.lock:
             if self.updating:raise ValueError('程式正在更新，請稍候')
             job=self.store.get(job_id)
-            if job['status'] not in {'failed','cancelled','interrupted'}:raise ValueError('這個任務無須續跑')
+            if job['status'] not in RESUMABLE:raise ValueError('這個任務無須續跑')
             if not resolve_model(self.store,job['model'],job['model_revision']):
                 raise ValueError('原本使用的模型版本已不存在，請恢復該版本或保留原稿並建立新任務')
             if job['model']=='qwen3' and not resolve_model(self.store,'qwen3-aligner',job.get('aligner_revision')):
                 raise ValueError('原本使用的時間對齊模型版本已不存在，請恢復該版本或建立新任務')
-            job['status']='queued';job['error']=None;job.pop('error_hint',None);job.pop('error_code',None);self.store.save(job)
+            move(job,'queued');job['error']=None;job.pop('error_hint',None);job.pop('error_code',None);self.store.save(job)
             return job
 
     def cancel(self, job_id):
         with self.lock:
             job=self.store.get(job_id)
             if job['status'] not in ACTIVE:raise ValueError('任務目前未在執行')
-            job['status']='cancelling' if self.current==job_id else 'cancelled'
+            move(job,'cancelling' if self.current==job_id else 'cancelled')
             self.store.save(job)
             if self.current==job_id and self.proc and self.proc.poll() is None:
                 self._terminate(self.proc)
@@ -121,14 +122,14 @@ class Manager:
                 waiting=sorted((j for j in self.store.list() if j['status']=='queued'),key=lambda j:j['created_at'])
                 if not waiting:continue
                 job=waiting[0];self.current=job['id'];path=self.store.job_dir(job['id'])
-                job['status']='running';job['error']=None;self.store.save(job)
+                move(job,'running');job['error']=None;self.store.save(job)
                 try:
                     log=(path/'worker.log').open('ab')
                     log_offset=log.tell()
                     env=dict(os.environ,HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
                     self.proc=subprocess.Popen([sys.executable,'-m','transcript_local.worker',str(self.store.root),job['id']],stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,env=env)
                 except Exception as exc:
-                    job['status']='failed';job['error']=str(exc)
+                    move(job,'failed');job['error']=str(exc)
                     if isinstance(exc,OSError) and exc.errno in {errno.EAGAIN,errno.EINTR}:self._retry(job)
                     if job['status']=='failed':self._describe_error(job)
                     self.store.save(job);self.current=None
@@ -138,11 +139,11 @@ class Manager:
             log.close()
             with self.lock:
                 job=self.store.get(job['id'])
-                if self.stop.is_set():job['status']='interrupted'
-                elif job['status']=='cancelling':job['status']='cancelled'
-                elif code==0 and (path/'transcript.json').exists():job['status']='complete'
+                if self.stop.is_set():move(job,'interrupted')
+                elif job['status']=='cancelling':move(job,'cancelled')
+                elif code==0 and (path/'transcript.json').exists():move(job,'complete')
                 else:
-                    job['status']='failed'
+                    move(job,'failed')
                     with (path/'worker.log').open('rb') as stream:
                         stream.seek(max(log_offset,stream.seek(0,2)-1600));job['error']=stream.read().decode('utf-8',errors='replace')
                     if 'init_sys_streams' in job['error'] and 'Bad file descriptor' in job['error']:self._retry(job)
@@ -169,7 +170,7 @@ class Manager:
     def _retry(job):
         if job.get('recovery_attempts',0)<1:
             job['recovery_attempts']=1
-            job['status']='queued'
+            move(job,'queued')
             job['error']='暫時性啟動異常，正在安全重試一次。'
 
     def delete(self, job_id):

@@ -4,7 +4,8 @@ import sys
 import subprocess
 import time
 from .service import ensure, healthy, request, stop, runtime, busy_lease, selected_version, switch_version, project_root
-from .store import read_json, ACTIVE
+from .states import ACTIVE, LABELS, UPDATING
+from .store import read_json
 from .update_check import check_remote
 
 LOGO = [r'  ___ _   _ _____', r' |_ _| |_| |_   _|', r'  | ||  _  | | |', r' |___|_| |_| |_|', '  I HATE TRANSCRIPTION.', '  Less typing. More living.']
@@ -73,13 +74,13 @@ def _screen(screen, store):
         put(6, '目前版本 · ' + ('本機開發版' if development else '正式版'))
         put(7, f'● {state} · {active} 個任務處理中')
         update = read_json(runtime(store) / 'update.json', {})
-        if update.get('status') in {'requested','preparing','validating','switching'}: state = '更新進行中';put(7,'● 更新進行中 · '+update.get('message',''))
+        if update.get('status') in UPDATING: state = '更新進行中';put(7,'● 更新進行中 · '+update.get('message',''))
         for i, option in enumerate(OPTIONS):
             text = option
             if i == 5:
                 text = '切換至正式版' if development else '切換至本機開發版'
             if i==2:
-                if update.get('status') in {'requested','preparing','validating','switching'}:text='更新進行中 · 請稍候'
+                if update.get('status') in UPDATING:text='更新進行中 · 請稍候'
                 elif checked.get('can_update'):text='↑ 有新版 · 檢查與更新'
                 elif checked.get('check_status')=='up_to_date':text='✓ 已是最新 · 再次檢查'
                 elif checked.get('check_status')=='check_failed':text='檢查更新 · 無法連線'
@@ -118,7 +119,7 @@ def _screen(screen, store):
                 if development:
                     message = '請切回正式版，再檢查更新。'
                     continue
-                if update.get('status') in {'requested','preparing','validating','switching'}:
+                if update.get('status') in UPDATING:
                     message='更新已在進行中，請稍候。';continue
                 def show(text):
                     put(16,text);screen.refresh()
@@ -136,7 +137,6 @@ def _screen(screen, store):
 
 def progress(screen,store):
     offset=0
-    labels={'queued':'排隊中','running':'處理中','complete':'可校稿','failed':'失敗','cancelled':'已停止','interrupted':'可續跑','cancelling':'停止中'}
     while True:
         info=healthy(store)
         try:jobs=request(info,'/api/jobs') if info else []
@@ -148,7 +148,7 @@ def progress(screen,store):
         for job in jobs:
             p=job.get('progress',{})
             count=f" · {p.get('completed',0)}/{p['total']} 片段" if p.get('total') else ''
-            lines.extend([job['name'],f"  {labels.get(job['status'],job['status'])}{count}", '  '+str(job.get('error') or p.get('message') or '')[:200],''])
+            lines.extend([job['name'],f"  {LABELS.get(job['status'],job['status'])}{count}", '  '+str(job.get('error') or p.get('message') or '')[:200],''])
         for i,line in enumerate(lines[offset:offset+height-1]):
             try:screen.addnstr(i,1,line,max(1,width-2))
             except curses.error:pass

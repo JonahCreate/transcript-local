@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 import webbrowser
+from .states import ACTIVE, UPDATING
 from .store import atomic_json, read_json
 
 
@@ -77,9 +78,7 @@ def switch_version(store):
     rt = runtime(store)
     with (rt / 'controller.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if read_json(rt / 'update.json', {}).get('status') in {
-            'requested', 'preparing', 'validating', 'switching',
-        }:
+        if read_json(rt / 'update.json', {}).get('status') in UPDATING:
             raise RuntimeError('請等正式版更新完成，再切換版本。')
         channel = 'development' if selected_version(store) == 'release' else 'release'
         if channel == 'development' and not (project_root() / 'src/transcript_local/cli.py').is_file():
@@ -87,7 +86,7 @@ def switch_version(store):
         info = healthy(store)
         if info:
             jobs = request(info, '/api/jobs')
-            if any(job['status'] in {'queued', 'running', 'cancelling'} for job in jobs):
+            if any(job['status'] in ACTIVE for job in jobs):
                 raise RuntimeError('請等轉錄佇列清空，再切換版本。')
         if info or busy_lease(store) or _supervisor_registered(store):
             stop(store)

@@ -5,7 +5,6 @@ const jobStatus = new Map();
 let jobsInitialized=false, jobRequest=0, appliedJobRequest=0, openRequest=0, openingAutomatic=false, pendingCompletions=[];
 const windowId=sessionStorage.getItem('iht-window')||crypto.randomUUID();sessionStorage.setItem('iht-window',windowId);
 let draftTimer, draftQueue=Promise.resolve(), positionTimer;
-const statusLabels = {queued:'排隊中',running:'處理中',cancelling:'停止中',cancelled:'已停止',interrupted:'可續跑',failed:'處理失敗',complete:'可校稿'};
 const modelInfo={medium:{title:'Whisper Medium',description:'一般中文錄音的均衡選擇；不知道選哪個時可先使用。速度與資源需求居中。'},small:{title:'Whisper Small',description:'模型較小，適合短錄音或希望較快取得初稿；可能需要較多校稿。'},qwen3:{title:'Qwen3-ASR 1.7B',description:'適合想嘗試另一種中文辨識結果，或 Whisper 辨識不理想的錄音。需額外下載時間對齊模型；處理時間與資源需求視電腦和錄音而定。'}};
 function el(tag, text, cls) {const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n;}
 function notify(message) {$('toast').textContent = message; $('toast').hidden = false; clearTimeout(notify.timer); notify.timer = setTimeout(() => $('toast').hidden = true, 6500);}
@@ -75,7 +74,7 @@ function renderJobs(){
   updateSelection();
   if (!jobs.length){$('jobs').replaceChildren(el('p','第一份逐字稿，從一段錄音開始。','empty-small'));return;}
   $('jobs').replaceChildren(...jobs.map(j=>{
-    const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));const label=j.status==='complete'?(j.id===state.current?'檢視中':'已完成・點擊查看'):(statusLabels[j.status]||j.status);item.append(title,el('div',`${label} · ${j.model}`,'job-meta'));
+    const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));const label=j.status==='complete'?(j.id===state.current?'檢視中':'已完成・點擊查看'):j.label;item.append(title,el('div',`${label} · ${j.model}`,'job-meta'));
     if(selectionMode){
       title.disabled=j.status!=='complete';
       if(j.status==='complete'){
@@ -94,13 +93,13 @@ function renderJobs(){
     if(j.status==='running'&&j.progress?.total){const p=el('progress');p.max=j.progress.total;p.value=j.progress.completed||0;p.setAttribute('aria-label','辨識片段進度');item.append(p);}
     if(j.error){item.append(el('div',j.error_hint||j.error,'job-error'));if(j.error_hint){const details=el('details',undefined,'original');details.append(el('summary','查看錯誤詳情'),el('pre',j.error));item.append(details);}}
     const buttons=el('div',undefined,'job-buttons');
-    if(['queued','running'].includes(j.status)){const b=el('button','停止','button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/cancel`,{method:'POST'});await refreshJobs();});buttons.append(b);}
+    if(j.actions.includes('cancel')){const b=el('button','停止','button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/cancel`,{method:'POST'});await refreshJobs();});buttons.append(b);}
     if(j.error_code==='model_missing'){
       const settings=el('button','前往模型設定','button subtle');
       settings.onclick=()=>changeView('setup');buttons.append(settings);
     }
-    if(['failed','cancelled','interrupted'].includes(j.status)){const next=(j.progress?.completed||0)+1;const label=j.progress?.total>=next?'從第 '+next+' 段繼續':'續跑';const b=el('button',label,'button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
-    if(!['queued','running','cancelling'].includes(j.status)){const b=el('button','清除','button subtle');b.onclick=protect(async()=>{if(!confirm(`將「${j.name}」的副本、進度與校稿移至本機 trash？\n原始錄音不會刪除。`))return;if(j.id===state.current&&state.dirty&&!confirm('尚有未儲存修改，仍要清除嗎？'))return;await api(`/jobs/${j.id}`,{method:'DELETE'});if(j.id===state.current){state.current=null;state.doc=null;state.dirty=false;$('editor').hidden=true;$('editor-empty').hidden=false;}await refreshJobs();await refreshStatus();});buttons.append(b);}
+    if(j.actions.includes('resume')){const next=(j.progress?.completed||0)+1;const label=j.progress?.total>=next?'從第 '+next+' 段繼續':'續跑';const b=el('button',label,'button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
+    if(j.actions.includes('delete')){const b=el('button','清除','button subtle');b.onclick=protect(async()=>{if(!confirm(`將「${j.name}」的副本、進度與校稿移至本機 trash？\n原始錄音不會刪除。`))return;if(j.id===state.current&&state.dirty&&!confirm('尚有未儲存修改，仍要清除嗎？'))return;await api(`/jobs/${j.id}`,{method:'DELETE'});if(j.id===state.current){state.current=null;state.doc=null;state.dirty=false;$('editor').hidden=true;$('editor-empty').hidden=false;}await refreshJobs();await refreshStatus();});buttons.append(b);}
     item.append(buttons);return item;
   }));
   updateSelection();

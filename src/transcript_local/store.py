@@ -9,7 +9,6 @@ import uuid
 from datetime import datetime, timezone
 
 SUPPORTED = {'.wav', '.mp3', '.m4a', '.mp4', '.mov', '.aac', '.flac', '.ogg', '.webm', '.mkv', '.aiff', '.opus'}
-ACTIVE = {'queued', 'running', 'cancelling'}
 
 def now():
     return datetime.now(timezone.utc).isoformat()

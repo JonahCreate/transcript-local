@@ -2,9 +2,8 @@
 import os
 import threading
 from .update_check import check_remote
-from .store import ACTIVE, atomic_json, read_json
-
-UPDATING = {'requested', 'preparing', 'validating', 'switching'}
+from .states import ACTIVE, UPDATING
+from .store import atomic_json, read_json
 
 class Updater:
     def __init__(self, manager, restart=None, models=None):

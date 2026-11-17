@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from .states import LABELS, actions
 from .store import Store, atomic_json, clean_name, read_json, now
 from . import __version__
 from .manager import Manager
@@ -241,7 +242,7 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
 
     @app.get('/api/jobs',dependencies=[Depends(auth)])
     def jobs():
-        return [dict(j,progress=read_json(store.job_dir(j['id'])/'progress.json',{})) for j in store.list()]
+        return [dict(j,progress=read_json(store.job_dir(j['id'])/'progress.json',{}),label=LABELS.get(j['status'],j['status']),actions=actions(j['status'])) for j in store.list()]
 
     @app.post('/api/jobs',dependencies=[Depends(auth)],status_code=202)
     def upload(file:UploadFile=File(...), model:Literal['medium','small','qwen3']=Form('medium'),
