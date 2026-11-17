@@ -60,6 +60,7 @@ def test_browser_three_edits_exports_and_reload(review_page,store,browser_job,tm
 
 def test_browser_model_choices_explain_tradeoffs(review_page):
     page=review_page
+    page.locator('#new-recording').click()
     for value,description in [('medium','均衡選擇'),('small','模型較小'),('qwen3','時間對齊模型')]:
         page.locator('#model').select_option(value)
         expect(page.locator('#model-explanation')).to_contain_text(description)
@@ -208,11 +209,12 @@ def test_browser_restores_long_review_scroll(review_page,store,browser_job):
     atomic_json(path,doc);page.reload()
     expect(page.locator('#segments textarea')).to_have_count(45)
     expect(page.locator('#segments textarea').first).to_be_visible()
-    page.locator('#segments').evaluate('(node)=>{node.scrollTop=550;node.dispatchEvent(new Event("scroll"));}')
-    wait_for(lambda:read_json(store.root/'preferences.json',{}).get('segment_position',0)>500)
+    # Review mode scrolls the page itself; the transcript has no inner scroll box.
+    page.evaluate('()=>window.scrollTo(0,1500)')
+    wait_for(lambda:read_json(store.root/'preferences.json',{}).get('position',0)>1400)
     page.reload()
     expect(page.locator('#segments textarea')).to_have_count(45)
-    wait_for(lambda:page.locator('#segments').evaluate('(node)=>node.scrollTop')>500)
+    wait_for(lambda:page.evaluate('()=>window.scrollY')>1400)
 
 
 def test_browser_current_version_only_checks(review_page):
@@ -347,3 +349,42 @@ def test_export_cancel_and_save_conflict_preserve_edits(review_page, store, tmp_
     assert not list(tmp_path.glob('*.md'))
     page.locator('#export-dialog-close').click()
     expect(page.locator('#segments textarea').first).to_have_value('需要保留的校稿')
+
+
+def test_review_mode_keeps_task_and_transcript_on_screen(review_page, store, wav, document, browser_job):
+    page = review_page
+    for index in range(8):  # newer tasks push the open one to the bottom of the list
+        finish_browser_job(store, make_browser_job(store, wav, document, f'較新的{index}.wav', f'2099-01-01T00:00:0{index}'))
+    page.set_viewport_size({'width': 1440, 'height': 900})
+    page.reload()
+    expect(page.locator('#recording-name')).to_have_text(browser_job['name'])
+    active = page.locator('.job.active').bounding_box()
+    assert 0 <= active['y'] and active['y'] + active['height'] <= 900
+    expect(page.locator('#workspace .page-title')).to_be_hidden()
+    expect(page.locator('#drop-zone')).to_be_hidden()
+    assert page.locator('#segments textarea').first.bounding_box()['height'] < 70
+    page.locator('#new-recording').click()
+    expect(page.locator('#drop-zone')).to_be_visible()
+    expect(page.locator('#new-recording')).to_have_attribute('aria-expanded', 'true')
+
+
+def test_review_mode_half_width_collapses_task_list(review_page, store, wav, document, browser_job):
+    page = review_page
+    other = make_browser_job(store, wav, document, '另一份.wav', '2026-01-01T00:00:09')
+    finish_browser_job(store, other)
+    page.set_viewport_size({'width': 720, 'height': 900})
+    page.reload()
+    expect(page.locator('#recording-name')).to_have_text(browser_job['name'])
+    expect(page.get_by_role('button', name='另一份.wav')).to_be_hidden()
+    assert page.locator('#segments textarea').first.bounding_box()['y'] < 900
+    page.locator('#toggle-jobs').click()
+    page.get_by_role('button', name='另一份.wav').click()
+    expect(page.locator('#recording-name')).to_have_text('另一份.wav')
+
+
+def test_playback_marks_current_segment(review_page):
+    page = review_page
+    page.locator('#segments .time').first.click()
+    expect(page.locator('.segment.now')).to_have_count(1)
+    expect(page.locator('.segment').first).to_have_class('segment now')
+    expect(page.locator('#now-playing')).to_contain_text('00:00')

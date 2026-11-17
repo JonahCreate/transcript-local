@@ -206,16 +206,16 @@ async function openJob(j,position=0,segmentPosition=0,automatic=false){
   await api('/preferences',{method:'PUT',body:{job_id:j.id,position,segment_position:segmentPosition}});
   if(request!==openRequest)return;
   $('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
-  renderSegments();renderExports();await loadDrafts();await refreshJobs();$('editor-empty').hidden=true;$('editor').hidden=false;window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
+  renderSegments();renderExports();await loadDrafts();await refreshJobs();$('editor-empty').hidden=true;$('editor').hidden=false;$('now-playing').hidden=true;fitAll();window.scrollTo(0,position);revealActiveJob();$('segments').scrollTop=segmentPosition;
   }finally{if(request===openRequest){state.opening=false;openingAutomatic=false;scheduleCompleted();}}
 }
 function renderSegments(){
   $('segments').replaceChildren(...state.doc.segments.map(r=>{
-    const row=el('article',undefined,'segment');row.dataset.pending=String(!!r.review_reasons.length&&!r.reviewed);
+    const row=el('article',undefined,'segment');row.dataset.id=r.id;row.dataset.pending=String(!!r.review_reasons.length&&!r.reviewed);
     const meta=el('div',undefined,'segment-meta');const play=el('button',`${time(r.start)} ↗`,'time');play.setAttribute('aria-label',`回聽 ${time(r.start)} 到 ${time(r.end)}`);
     play.onclick=protect(async()=>{const audio=$('audio');audio.currentTime=r.start;audio.dataset.end=r.end;await audio.play();});meta.append(play);
     const label=el('label',undefined,'check');const check=el('input');check.type='checkbox';check.checked=r.reviewed;check.onchange=()=>{const current=state.doc.segments.find(x=>x.id===r.id);current.reviewed=check.checked;markDirty(r.id);row.dataset.pending=String(!!current.review_reasons.length&&!current.reviewed);filterSegments();};label.append(check,el('span','已確認'));meta.append(label);
-    const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);};body.append(input);
+    const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);fit(input);};body.append(input);
     if(r.review_reasons.length){
       const reason=el('button',r.review_reasons.join('；')+' · 回聽','button subtle review-reason');
       reason.onclick=play.onclick;body.append(reason);
@@ -229,7 +229,29 @@ function filterSegments(){
   document.querySelectorAll('.segment').forEach(n=>n.hidden=$('only-pending').checked&&n.dataset.pending!=='true');
 }
 $('only-pending').onchange=filterSegments;
-$('audio').ontimeupdate=()=>{const audio=$('audio');if(audio.dataset.end&&audio.currentTime>=Number(audio.dataset.end)){audio.pause();delete audio.dataset.end;}};
+// Textareas grow with their text; CSS field-sizing does it where supported.
+const nativeFit=CSS.supports('field-sizing','content');
+function fit(input){if(nativeFit)return;input.style.height='auto';input.style.height=input.scrollHeight+2+'px';}
+// Keep the open task visible inside the sticky task list without moving the page.
+function revealActiveJob(){const box=document.querySelector('.intake'),active=box.querySelector('.job.active');if(!active||box.scrollHeight<=box.clientHeight)return;
+  if(active.offsetTop<box.scrollTop||active.offsetTop+active.offsetHeight>box.scrollTop+box.clientHeight)box.scrollTop=active.offsetTop-box.clientHeight/3;}
+function fitAll(){document.querySelectorAll('#segments textarea').forEach(fit);}
+window.addEventListener('resize',fitAll);
+function showPlaying(){
+  const audio=$('audio'),t=audio.currentTime,label=$('now-playing');
+  const current=state.doc?.segments.find(x=>x.start<=t&&t<x.end);
+  document.querySelectorAll('.segment.now').forEach(n=>{if(n.dataset.id!==String(current?.id))n.classList.remove('now');});
+  if(!current){label.hidden=true;return;}
+  const row=document.querySelector(`.segment[data-id="${current.id}"]`);row?.classList.add('now');
+  const text=current.edited_text??current.traditional_text;
+  label.textContent=`${audio.paused?'⏸ 停在':'▶ 正在聽'} ${time(current.start)} · ${text.length>24?text.slice(0,24)+'…':text}`;
+  label.dataset.id=current.id;label.hidden=false;
+}
+$('audio').ontimeupdate=()=>{const audio=$('audio');if(audio.dataset.end&&audio.currentTime>=Number(audio.dataset.end)){audio.pause();delete audio.dataset.end;}showPlaying();};
+$('audio').onpause=showPlaying;$('audio').onplay=showPlaying;
+$('now-playing').onclick=()=>document.querySelector(`.segment[data-id="${$('now-playing').dataset.id}"] textarea`)?.focus();
+$('new-recording').onclick=()=>{const open=$('new-recording').closest('.intake').classList.toggle('intake-open');$('new-recording').setAttribute('aria-expanded',String(open));};
+$('toggle-jobs').onclick=()=>{const open=$('toggle-jobs').closest('.intake').classList.toggle('jobs-open');$('toggle-jobs').setAttribute('aria-expanded',String(open));};
 $('audio').onerror=()=>notify('回聽音訊無法載入，請確認任務資料仍完整。');
 async function save(){
   if(!state.current||!state.dirty)return;
@@ -239,7 +261,7 @@ async function save(){
     await flushDraft();
     const doc=await api(`/jobs/${state.current}/transcript`,{method:'PUT',body:{revision:state.doc.revision,segments:state.doc.segments.map(r=>({id:r.id,text:r.edited_text??r.traditional_text,reviewed:r.reviewed}))}});
     state.doc=doc;state.dirty=false;state.changed.clear();
-    const position=window.scrollY,segmentPosition=$('segments').scrollTop;renderSegments();renderExports();window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
+    const position=window.scrollY,segmentPosition=$('segments').scrollTop;renderSegments();renderExports();fitAll();window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
     $('save-state').textContent=`已儲存第 ${doc.revision} 版`;
     notify(`第 ${doc.revision} 版已儲存在本機。`);
     for(const id of new Set([windowId,...state.recoveredDraftIds])) {
@@ -355,7 +377,7 @@ function previewDraft(draft){
     const ids=new Set([...$('draft-preview').querySelectorAll('input:checked')].map(n=>Number(n.dataset.id)));
     if(!ids.size){notify('請選擇要恢復的片段。');return;}
     for(const item of draft.segments.filter(x=>ids.has(x.id))){const row=state.doc.segments.find(r=>r.id===item.id);row.edited_text=item.text;row.reviewed=item.reviewed;state.changed.add(item.id);}
-    state.recoveredDraftIds.add(draft.window_id);renderSegments();markDirty();$('draft-dialog').close();window.scrollTo(0,draft.position||0);$('segments').scrollTop=draft.segment_position||0;notify('草稿已恢復至編輯區，請確認後儲存。');
+    state.recoveredDraftIds.add(draft.window_id);renderSegments();markDirty();$('draft-dialog').close();fitAll();window.scrollTo(0,draft.position||0);$('segments').scrollTop=draft.segment_position||0;notify('草稿已恢復至編輯區，請確認後儲存。');
   };
   $('draft-dialog').showModal();
 }
