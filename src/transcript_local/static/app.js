@@ -66,7 +66,11 @@ async function refreshJobs() {
     if(j.error){item.append(el('div',j.error_hint||j.error,'job-error'));if(j.error_hint){const details=el('details',undefined,'original');details.append(el('summary','查看錯誤詳情'),el('pre',j.error));item.append(details);}}
     const buttons=el('div',undefined,'job-buttons');
     if(['queued','running'].includes(j.status)){const b=el('button','停止','button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/cancel`,{method:'POST'});await refreshJobs();});buttons.append(b);}
-    if(['failed','cancelled','interrupted'].includes(j.status)){const b=el('button','續跑','button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
+    if(j.error_code==='model_missing'){
+      const settings=el('button','前往模型設定','button subtle');
+      settings.onclick=()=>changeView('setup');buttons.append(settings);
+    }
+    if(['failed','cancelled','interrupted'].includes(j.status)){const next=(j.progress?.completed||0)+1;const label=j.progress?.total>=next?'從第 '+next+' 段繼續':'續跑';const b=el('button',label,'button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
     if(!['queued','running','cancelling'].includes(j.status)){const b=el('button','清除','button subtle');b.onclick=protect(async()=>{if(!confirm(`將「${j.name}」的副本、進度與校稿移至本機 trash？\n原始錄音不會刪除。`))return;if(j.id===state.current&&state.dirty&&!confirm('尚有未儲存修改，仍要清除嗎？'))return;await api(`/jobs/${j.id}`,{method:'DELETE'});if(j.id===state.current){state.current=null;state.doc=null;state.dirty=false;$('editor').hidden=true;$('editor-empty').hidden=false;}await refreshJobs();await refreshStatus();});buttons.append(b);}
     item.append(buttons);return item;
   }));scheduleCompleted();
@@ -103,11 +107,18 @@ function renderSegments(){
     play.onclick=protect(async()=>{const audio=$('audio');audio.currentTime=r.start;audio.dataset.end=r.end;await audio.play();});meta.append(play);
     const label=el('label',undefined,'check');const check=el('input');check.type='checkbox';check.checked=r.reviewed;check.onchange=()=>{const current=state.doc.segments.find(x=>x.id===r.id);current.reviewed=check.checked;markDirty(r.id);row.dataset.pending=String(!!current.review_reasons.length&&!current.reviewed);filterSegments();};label.append(check,el('span','已確認'));meta.append(label);
     const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);};body.append(input);
-    if(r.review_reasons.length)body.append(el('div',r.review_reasons.join('；'),'review-reason'));
+    if(r.review_reasons.length){
+      const reason=el('button',r.review_reasons.join('；')+' · 回聽','button subtle review-reason');
+      reason.onclick=play.onclick;body.append(reason);
+    }
     const details=el('details',undefined,'original');details.append(el('summary','查看原始辨識'),el('div',r.raw_text));body.append(details);row.append(meta,body);return row;
   }));filterSegments();
 }
-function filterSegments(){document.querySelectorAll('.segment').forEach(n=>n.hidden=$('only-pending').checked&&n.dataset.pending!=='true');}
+function filterSegments(){
+  const pending=state.doc.segments.filter(segment=>segment.review_reasons.length&&!segment.reviewed).length;
+  $('pending-count').textContent='只看待確認片段（'+pending+' 段）';
+  document.querySelectorAll('.segment').forEach(n=>n.hidden=$('only-pending').checked&&n.dataset.pending!=='true');
+}
 $('only-pending').onchange=filterSegments;
 $('audio').ontimeupdate=()=>{const audio=$('audio');if(audio.dataset.end&&audio.currentTime>=Number(audio.dataset.end)){audio.pause();delete audio.dataset.end;}};
 $('audio').onerror=()=>notify('回聽音訊無法載入，請確認任務資料仍完整。');

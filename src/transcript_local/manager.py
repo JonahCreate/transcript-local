@@ -159,7 +159,7 @@ class Manager:
             code,hint='disk_full','磁碟空間不足。請先釋放空間，再按續跑。'
         elif '音軌' in error or 'Invalid data found' in error:
             code,hint='invalid_audio','無法讀取音訊。請確認錄音可播放、影片含音軌，必要時重新匯出音檔。'
-        elif 'model.bin' in error or '模型檔' in error:
+        elif any(marker in error for marker in ('model.bin', '模型檔', '模型版本已不存在')):
             code,hint='model_missing','模型檔案無法讀取。請到環境與模型確認模型完整後再續跑。'
         elif 'bad_alloc' in error or 'out of memory' in error.lower():
             code,hint='memory','記憶體不足。請先關閉其他大型程式，或用 Small 建立新任務。'

@@ -228,3 +228,19 @@ def test_browser_offers_repair_for_unknown_installed_revision(review_page):
     page.locator('#update-button').click()
     expect(page.locator('#update-button')).to_have_text('更新中…')
     assert len(updates)==1
+
+
+def test_browser_review_marker_filters_plays_and_saves(review_page):
+    page = review_page
+    expect(page.locator('#pending-count')).to_contain_text('1 段')
+    page.locator('#only-pending').check()
+    expect(page.locator('.segment:visible')).to_have_count(1)
+    page.locator('.review-reason').click()
+    page.wait_for_function("() => document.querySelector('#audio').currentTime > 0")
+    page.locator('.segment:visible textarea').fill('已回聽修正')
+    page.locator('.segment:visible input[type=checkbox]').check()
+    expect(page.locator('#pending-count')).to_contain_text('0 段')
+    page.locator('#save').click()
+    expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
+    page.locator('#only-pending').uncheck()
+    expect(page.locator('.segment textarea').first).to_have_value('已回聽修正')

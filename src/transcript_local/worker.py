@@ -15,12 +15,20 @@ def progress(path, **data):
     atomic_json(path/'progress.json', data)
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
+class AlignmentError(RuntimeError):
+    pass
+
+
 def qwen_rows(result, offset):
     """Keep the model's complete text while grouping aligned words into reviewable phrases."""
     text = result.text
     words = result.segments or []
     if text.strip() and not words:
-        raise RuntimeError('時間對齊未產生結果，請確認時間對齊模型完整後重試')
+        # Qwen can output punctuation alone in silence; the aligner has no
+        # spoken words to time. Never discard actual text on alignment failure.
+        if all(char.isspace() or unicodedata.category(char).startswith('P') for char in text):
+            return []
+        raise AlignmentError('時間對齊未產生結果，含語音文字的片段尚未保存；請查看錯誤並回聽音訊')
     rows = []
     cursor = 0
     group_start = 0
@@ -41,10 +49,13 @@ def qwen_rows(result, offset):
         clean = ''.join(c.casefold() for c in token if c == "'" or unicodedata.category(c)[0] in 'LN')
         if not clean: continue
         if normalized[normalized_cursor:normalized_cursor+len(clean)] != clean:
-            raise RuntimeError('時間對齊結果與辨識文字不一致，已停止以避免遺漏文字')
+            raise AlignmentError('時間對齊結果與辨識文字不一致，已停止以避免遺漏文字')
         normalized_cursor += len(clean)
         end = positions[normalized_cursor-1]+1
-        group_words.append({'start':float(word['start'])+offset, 'end':float(word['end'])+offset, 'text':word['text']})
+        start, finish = float(word['start']), float(word['end'])
+        if not (math.isfinite(start) and math.isfinite(finish) and 0 <= start <= finish):
+            raise AlignmentError('時間對齊結果含無效時間')
+        group_words.append({'start':start+offset, 'end':finish+offset, 'text':word['text']})
         cursor = end
         tail = cursor
         while tail < len(text) and (text[tail].isspace() or text[tail] in '，。！？；、,.!?;:：\"\'）)」』'):
@@ -60,7 +71,48 @@ def qwen_rows(result, offset):
     elif rows and text[group_start:].strip():
         rows[-1]['text'] += text[group_start:]
     if normalized_cursor != len(normalized):
-        raise RuntimeError('時間對齊未涵蓋完整辨識文字，已停止以避免遺漏文字')
+        raise AlignmentError('時間對齊未涵蓋完整辨識文字，已停止以避免遺漏文字')
+    return rows
+
+def qwen_transcribe_rows(model, aligner, samples, start, language, prompts):
+    """Retry apparently empty 30s results in shorter ranges, without hiding gaps."""
+    def transcribe(audio):
+        return model.transcribe(audio, language=language, context='、'.join(prompts),
+                                return_timestamps=True, forced_aligner=aligner)
+    def rows_for(audio, offset):
+        result = transcribe(audio)
+        try:
+            rows = qwen_rows(result, offset)
+            duration = len(audio) / 16000
+            if any(not 0 <= row['start'] < row['end'] <= duration + .05 for row in rows):
+                raise AlignmentError('時間對齊結果超出片段範圍')
+            return result, rows
+        except AlignmentError:
+            return result, [{
+                'start': 0., 'end': len(audio) / 16000, 'text': result.text,
+                'avg_logprob': None, 'compression_ratio': None, 'words': [],
+                'review_reasons': ['文字時間未對齊，此時間為整段音訊範圍，請回聽確認'],
+            }]
+
+    _, rows = rows_for(samples, start)
+    if rows:return rows
+    rows=[]
+    split=len(samples)//2
+    for begin,stop in ((0,split),(split,len(samples))):
+        if stop<=begin:continue
+        offset=begin/16000
+        part, part_rows = rows_for(samples[begin:stop], start+offset)
+        if not part_rows:
+            part_rows=[{'start':0.,'end':(stop-begin)/16000,'text':part.text,
+                        'display_text':'（此片段未辨識出文字，請回聽確認）',
+                        'avg_logprob':None,'compression_ratio':None,'words':[],
+                        'review_reasons':['此片段未辨識出文字，請回聽確認']}]
+        else:
+            for row in part_rows:
+                row.setdefault('review_reasons', []).append('切短重試辨識，建議回聽確認')
+        for row in part_rows:
+            row['start']+=offset;row['end']+=offset
+        rows.extend(part_rows)
     return rows
 
 
@@ -122,9 +174,7 @@ def run(store, job_id):
                 wav.setpos(round(start*16000))
                 samples = np.frombuffer(wav.readframes(round((end-start)*16000)),dtype=np.int16).astype(np.float32)/32768
                 if job['model']=='qwen3':
-                    result=model.transcribe(samples, language={'zh':'Chinese','en':'English','auto':None}[job['language']],
-                                            context='、'.join(job['prompts']),return_timestamps=True,forced_aligner=aligner)
-                    rows=qwen_rows(result,start)
+                    rows=qwen_transcribe_rows(model,aligner,samples,start,{'zh':'Chinese','en':'English','auto':None}[job['language']],job['prompts'])
                 else:
                     segments,_ = model.transcribe(samples, language=None if job['language']=='auto' else job['language'],
                         beam_size=5, condition_on_previous_text=False, vad_filter=True, word_timestamps=True,
@@ -145,15 +195,15 @@ def run(store, job_id):
         right = (chunk['end']+chunks[index+1]['start'])/2 if index+1<len(chunks) else duration
         for raw in chunk['segments']:
             start,end = raw['start']+chunk['start'],min(duration,raw['end']+chunk['start'])
-            if not (left <= (start+end)/2 <= right) or not raw['text'].strip(): continue
-            reasons=[]
+            if not (left <= (start+end)/2 <= right) or not raw.get('display_text',raw['text']).strip(): continue
+            reasons=list(raw.get('review_reasons',[]))
             if merged and start < merged[-1]['end']:
-                if raw['text']==merged[-1]['raw_text']: continue
+                if not reasons and raw['text']==merged[-1]['raw_text']: continue
                 start=merged[-1]['end'];reasons.append('分段交界，建議回聽')
             if end<=start or not all(math.isfinite(v) for v in (start,end)):continue
             if raw['avg_logprob'] is not None and raw['avg_logprob'] < -1:reasons.append('辨識把握較低')
             if raw['compression_ratio'] is not None and raw['compression_ratio'] > 2.4:reasons.append('疑似重複文字')
-            traditional = convert(raw['text']).strip()
+            traditional = convert(raw.get('display_text',raw['text'])).strip()
             for old,new in [('隻要','只要'),('隻有','只有'),('隻是','只是'),('隻能','只能')]:traditional=traditional.replace(old,new)
             merged.append({'id':len(merged), 'start':start, 'end':end, 'raw_text':raw['text'],
                            'traditional_text':traditional,'edited_text':None,'reviewed':False,

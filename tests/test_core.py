@@ -39,6 +39,47 @@ def test_qwen_alignment_preserves_punctuation_and_rejects_mismatch():
     with pytest.raises(RuntimeError,match='不一致'):
         qwen_rows(SimpleNamespace(text='你好',segments=[{'text':'錯誤','start':0,'end':1}]),0)
 
+def test_qwen_empty_alignment_ignores_only_punctuation():
+    from transcript_local.worker import qwen_rows
+    assert qwen_rows(SimpleNamespace(text='。',segments=[]),290)==[]
+    assert qwen_rows(SimpleNamespace(text='！  …',segments=None),0)==[]
+    with pytest.raises(RuntimeError,match='時間對齊'):
+        qwen_rows(SimpleNamespace(text='重要內容。',segments=[]),0)
+
+def test_qwen_retries_empty_chunk_and_marks_unrecognized_audio():
+    import numpy as np
+    from transcript_local.worker import qwen_transcribe_rows
+    results=iter([SimpleNamespace(text='。',segments=[]),
+                  SimpleNamespace(text='內容',segments=[{'text':'內容','start':1.,'end':2.}]),
+                  SimpleNamespace(text='',segments=[])])
+    class Model:
+        def transcribe(self,*args,**kwargs):return next(results)
+    rows=qwen_transcribe_rows(Model(),object(),np.zeros(30*16000),290,'Chinese',[])
+    assert len(rows)==2 and rows[0]['text']=='內容'
+    assert rows[0]['words'][0]['start']==291
+    assert rows[1]['start']==15 and rows[1]['end']==30
+    assert '請回聽' in rows[1]['display_text']
+    assert all(row['review_reasons'] for row in rows)
+
+def test_qwen_marks_both_unrecognized_halves():
+    from transcript_local.worker import qwen_transcribe_rows
+    model = SimpleNamespace(transcribe=lambda *args, **kwargs: SimpleNamespace(text='。', segments=[]))
+    rows = qwen_transcribe_rows(model, object(), [0] * 480000, 290, 'Chinese', [])
+    assert [(row['start'], row['end']) for row in rows] == [(0, 15), (15, 30)]
+    assert all('未辨識出文字' in row['display_text'] for row in rows)
+
+
+def test_qwen_keeps_text_when_alignment_is_missing_or_mismatched():
+    from transcript_local.worker import qwen_transcribe_rows
+    for segments in ([], [{'text': '錯誤', 'start': 0, 'end': 1}]):
+        result = SimpleNamespace(text='重要內容。', segments=segments)
+        model = SimpleNamespace(transcribe=lambda *args, **kwargs: result)
+        row, = qwen_transcribe_rows(model, object(), [0] * 16000, 290, 'Chinese', [])
+        assert (row['start'], row['end'], row['text']) == (0, 1, '重要內容。')
+        assert row['words'] == []
+        assert '未對齊' in row['review_reasons'][0]
+
+
 def test_qwen_worker_checkpoint_and_edits(store,wav,monkeypatch):
     install_fake_qwen(store)
     class Session:
