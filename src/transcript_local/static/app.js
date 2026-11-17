@@ -11,11 +11,15 @@ function el(tag, text, cls) {const n = document.createElement(tag); if (text !==
 function notify(message) {$('toast').textContent = message; $('toast').hidden = false; clearTimeout(notify.timer); notify.timer = setTimeout(() => $('toast').hidden = true, 6500);}
 function bytes(n) {return n >= 1024**3 ? (n/1024**3).toFixed(1)+' GB' : (n/1024**2).toFixed(0)+' MB';}
 function time(n) {return `${Math.floor(n/60).toString().padStart(2,'0')}:${Math.floor(n%60).toString().padStart(2,'0')}`;}
-async function api(path, options = {}) {
+async function apiResponse(path, options = {}) {
   const headers = {'X-Local-Request':'1',...options.headers};
   if (options.body && !(options.body instanceof FormData)) {headers['Content-Type']='application/json'; options.body=JSON.stringify(options.body);}
   const response = await fetch('/api'+path, {...options,headers});
   if (!response.ok) {let message=await response.text(); try {const parsed=JSON.parse(message); message=typeof parsed.detail==='string'?parsed.detail:JSON.stringify(parsed.detail);} catch {} throw new Error(message || `操作失敗 (${response.status})`);}
+  return response;
+}
+async function api(path, options) {
+  const response = await apiResponse(path, options);
   if (response.status === 204) return null;
   return response.json();
 }
@@ -57,10 +61,35 @@ async function refreshJobs() {
   const completed=jobs.filter(j=>j.status==='complete'&&['queued','running'].includes(jobStatus.get(j.id))).sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id));
   for(const j of jobs)jobStatus.set(j.id,j.status);
   if(jobsInitialized&&completed.length){pendingCompletions.push(...completed.map(j=>j.id));if(state.current)notify(completed.length===1?`「${completed[0].name}」已完成，可從任務記錄點擊查看。`:`${completed.length} 份逐字稿已完成，可從任務記錄點擊查看。`);}
-  if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length; const key=JSON.stringify([state.current,jobs]); if(key===state.jobsKey){scheduleCompleted();return;} state.jobsKey=key;
+  if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length;
+  renderJobs();
+  scheduleCompleted();
+}
+function renderJobs(){
+  const jobs=state.jobs;
+  const key=JSON.stringify([state.current,selectionMode,jobs]);
+  if(key===state.jobsKey)return;
+  state.jobsKey=key;
+  const eligible = new Set(jobs.filter(job=>job.status==='complete').map(job=>job.id));
+  for(const id of selectedJobs)if(!eligible.has(id))selectedJobs.delete(id);
+  updateSelection();
   if (!jobs.length){$('jobs').replaceChildren(el('p','第一份逐字稿，從一段錄音開始。','empty-small'));return;}
   $('jobs').replaceChildren(...jobs.map(j=>{
     const item=el('article',undefined,'job'+(j.id===state.current?' active':''));const title=el('button',j.name,'job-title');title.onclick=protect(()=>openJob(j));const label=j.status==='complete'?(j.id===state.current?'檢視中':'已完成・點擊查看'):(statusLabels[j.status]||j.status);item.append(title,el('div',`${label} · ${j.model}`,'job-meta'));
+    if(selectionMode){
+      title.disabled=j.status!=='complete';
+      if(j.status==='complete'){
+        const checkbox=el('input');
+        checkbox.type='checkbox';
+        checkbox.dataset.jobId=j.id;
+        checkbox.setAttribute('aria-label','選擇 '+j.name);
+        item.classList.add('selectable-job');
+        item.prepend(checkbox);
+        title.onclick=null;
+        item.onclick=event=>selectJob(j.id,event.shiftKey);
+      }
+      return item;
+    }
     if(j.progress?.message&&j.status!=='complete')item.append(el('p',j.progress.message,'job-meta'));
     if(j.status==='running'&&j.progress?.total){const p=el('progress');p.max=j.progress.total;p.value=j.progress.completed||0;p.setAttribute('aria-label','辨識片段進度');item.append(p);}
     if(j.error){item.append(el('div',j.error_hint||j.error,'job-error'));if(j.error_hint){const details=el('details',undefined,'original');details.append(el('summary','查看錯誤詳情'),el('pre',j.error));item.append(details);}}
@@ -73,10 +102,102 @@ async function refreshJobs() {
     if(['failed','cancelled','interrupted'].includes(j.status)){const next=(j.progress?.completed||0)+1;const label=j.progress?.total>=next?'從第 '+next+' 段繼續':'續跑';const b=el('button',label,'button subtle');b.onclick=protect(async()=>{await api(`/jobs/${j.id}/resume`,{method:'POST'});await refreshJobs();});buttons.append(b);}
     if(!['queued','running','cancelling'].includes(j.status)){const b=el('button','清除','button subtle');b.onclick=protect(async()=>{if(!confirm(`將「${j.name}」的副本、進度與校稿移至本機 trash？\n原始錄音不會刪除。`))return;if(j.id===state.current&&state.dirty&&!confirm('尚有未儲存修改，仍要清除嗎？'))return;await api(`/jobs/${j.id}`,{method:'DELETE'});if(j.id===state.current){state.current=null;state.doc=null;state.dirty=false;$('editor').hidden=true;$('editor-empty').hidden=false;}await refreshJobs();await refreshStatus();});buttons.append(b);}
     item.append(buttons);return item;
-  }));scheduleCompleted();
+  }));
+  updateSelection();
 }
+let selectionMode=false;
+let selectionAnchor=null;
+let exportingBatch=false;
+const selectedJobs=new Set();
+
+function updateSelection(){
+  $('batch-actions').hidden=!selectionMode;
+  $('selection-count').textContent=`已選 ${selectedJobs.size} 份`;
+  const disabled=exportingBatch||!selectedJobs.size;
+  $('batch-md').disabled=disabled;
+  $('batch-formats').disabled=disabled;
+  if(disabled)showBatchFormats(false);
+  for(const checkbox of $('jobs').querySelectorAll('[data-job-id]')){
+    checkbox.checked=selectedJobs.has(checkbox.dataset.jobId);
+  }
+}
+function selectJob(id, range){
+  const ids=state.jobs.filter(job=>job.status==='complete').map(job=>job.id);
+  const anchor=ids.indexOf(selectionAnchor);
+  if(range&&anchor>=0){
+    const end=ids.indexOf(id);
+    for(const selected of ids.slice(Math.min(anchor,end),Math.max(anchor,end)+1))selectedJobs.add(selected);
+  }else{
+    if(selectedJobs.has(id))selectedJobs.delete(id);
+    else selectedJobs.add(id);
+    selectionAnchor=id;
+  }
+  updateSelection();
+}
+function setSelectionMode(enabled){
+  selectionMode=enabled;
+  selectedJobs.clear();
+  selectionAnchor=null;
+  $('select-jobs').textContent=enabled?'完成':'選擇';
+  $('select-jobs').setAttribute('aria-pressed',String(enabled));
+  renderJobs();
+  if(!enabled){
+    $('select-jobs').focus();
+    scheduleCompleted();
+  }
+}
+function showBatchFormats(open){
+  $('batch-format-options').hidden=!open;
+  $('batch-formats').setAttribute('aria-expanded',String(open));
+}
+$('select-jobs').onclick=()=>setSelectionMode(!selectionMode);
+$('batch-formats').onpointerenter=()=>{if(!$('batch-formats').disabled)showBatchFormats(true);};
+$('batch-formats').onclick=event=>{
+  const keyboard=event.detail===0;
+  const open=$('batch-format-options').hidden||!keyboard;
+  showBatchFormats(open);
+  if(open&&keyboard)$('batch-format-options').querySelector('button').focus();
+};
+$('batch-download').onpointerleave=()=>{
+  if(!$('batch-download').contains(document.activeElement))showBatchFormats(false);
+};
+$('batch-download').onfocusout=event=>{
+  if(!$('batch-download').contains(event.relatedTarget))showBatchFormats(false);
+};
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&selectionMode&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){
+    event.preventDefault();
+    setSelectionMode(false);
+  }
+});
+async function downloadBatch(format){
+  if(exportingBatch||!selectedJobs.size)return;
+  if((state.dirty||state.saving)&&selectedJobs.has(state.current)){
+    notify('請先儲存目前稿件的修改，再下載。');
+    return;
+  }
+  const ids=state.jobs.filter(job=>selectedJobs.has(job.id)).map(job=>job.id);
+  exportingBatch=true;
+  updateSelection();
+  try{
+    const response=await apiResponse('/jobs/batch-export',{method:'POST',body:{ids,format}});
+    await saveDownload(response,ids.length===1?`逐字稿.${format}`:'逐字稿.zip');
+  }finally{
+    exportingBatch=false;
+    updateSelection();
+  }
+}
+$('batch-md').onclick=protect(()=>downloadBatch('md'));
+for(const button of $('batch-format-options').querySelectorAll('button')){
+  button.onclick=protect(async()=>{
+    showBatchFormats(false);
+    await downloadBatch(button.dataset.format);
+    if(selectionMode)$('batch-formats').focus();
+  });
+}
+
 function scheduleCompleted(){
-  if(!jobsInitialized||!pendingCompletions.length||document.hidden)return;
+  if(!jobsInitialized||!pendingCompletions.length||document.hidden||selectionMode)return;
   if(state.current){pendingCompletions=[];return;}
   if(state.opening||state.saving||state.dirty)return;
   const job=state.jobs.find(j=>j.id===pendingCompletions[0]&&j.status==='complete');
@@ -250,6 +371,16 @@ function previewDraft(draft){
   $('draft-dialog').showModal();
 }
 $('close-draft').onclick=()=>$('draft-dialog').close();
+async function saveDownload(response, fallbackName){
+  const url=URL.createObjectURL(await response.blob());
+  const download=el('a');
+  download.href=url;
+  download.download=decodeURIComponent((response.headers.get('Content-Disposition')||'').split("UTF-8''")[1]||fallbackName);
+  document.body.append(download);
+  download.click();
+  download.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+}
 function renderExports(){
   $('exports').replaceChildren(...['md','txt','srt','json'].map(fmt=>{
     const link=el('a',fmt.toUpperCase());link.href=`/api/jobs/${state.current}/export/${fmt}?revision=${state.doc.revision}`;
@@ -257,9 +388,7 @@ function renderExports(){
       event.preventDefault();if(state.dirty){notify('請先儲存修改，再匯出。');return;}
       const response=await fetch(link.href,{cache:'no-store'});
       if(!response.ok)throw new Error('匯出失敗或版本已變更，請保留草稿並重新載入。');
-      const url=URL.createObjectURL(await response.blob());const download=el('a');download.href=url;
-      download.download=decodeURIComponent((response.headers.get('Content-Disposition')||'').split("UTF-8''")[1]||`逐字稿.${fmt}`);
-      document.body.append(download);download.click();download.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+      await saveDownload(response,`逐字稿.${fmt}`);
     });return link;
   }));
 }

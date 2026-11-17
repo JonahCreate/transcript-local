@@ -7,6 +7,9 @@ from pathlib import Path
 import secrets
 import shutil
 import threading
+import tempfile
+from zipfile import ZIP_DEFLATED, ZipFile
+from starlette.background import BackgroundTask
 from typing import Literal
 from urllib.parse import quote
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Depends
@@ -20,6 +23,12 @@ from .manager import Manager
 from .models import Models
 from .updater import Updater
 from .review import FORMAT_NAMES, export, preview, save_edits
+
+ExportFormat = Literal['md','txt','srt','json']
+
+class BatchExport(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=1000)
+    format: ExportFormat = 'md'
 
 class ModelChoice(BaseModel):
     name: Literal['medium','small','qwen3']
@@ -271,16 +280,44 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
         if not path.exists():raise HTTPException(404,'回聽音訊尚未準備完成')
         return FileResponse(path,media_type='audio/wav')
 
+    def export_filename(current_job, current_doc, fmt):
+        source_name = Path(current_job['name']).stem.replace(':', '：')[:60].rstrip(' .')
+        return f'{source_name}－第{current_doc["revision"]}版－{FORMAT_NAMES[fmt]}'
+
     @app.get('/api/jobs/{job_id}/export/{fmt}',dependencies=[Depends(auth)])
-    def download_export(job_id:str,fmt:Literal['md','txt','srt','json'],revision:int|None=None):
-        current_job=job(job_id)
-        current_doc=doc(job_id)
-        if revision is not None and current_doc['revision']!=revision:raise ValueError('稿件版本已變更，請重新載入後匯出。')
-        content=export(current_job,current_doc,fmt)
-        source_name=Path(current_job['name']).stem.replace(':','：')[:60].rstrip(' .')
-        filename=f'{source_name}－第{current_doc["revision"]}版－{FORMAT_NAMES[fmt]}'
-        return Response(content,media_type='application/json' if fmt=='json' else 'text/plain; charset=utf-8',
+    def download_export(job_id: str, fmt: ExportFormat, revision: int | None = None):
+        current_job = job(job_id)
+        current_doc = doc(job_id)
+        if revision is not None and current_doc['revision'] != revision:
+            raise ValueError('稿件版本已變更，請重新載入後匯出。')
+        filename = export_filename(current_job, current_doc, fmt)
+        return Response(export(current_job, current_doc, fmt),
+                        media_type='application/json' if fmt=='json' else 'text/plain; charset=utf-8',
                         headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(filename)})
+
+    @app.post('/api/jobs/batch-export', dependencies=[Depends(auth)])
+    def batch_export(payload: BatchExport):
+        ids = list(dict.fromkeys(payload.ids))
+        for job_id in ids:
+            if job(job_id)['status'] != 'complete':
+                raise ValueError('只能匯出已完成的任務。')
+        if len(ids) == 1:
+            return download_export(ids[0], payload.format)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temporary:
+            archive = Path(temporary.name)
+        try:
+            with ZipFile(archive, 'w', ZIP_DEFLATED) as bundle:
+                for index, job_id in enumerate(ids, 1):
+                    current_job = job(job_id)
+                    current_doc = doc(job_id)
+                    filename = export_filename(current_job, current_doc, payload.format)
+                    bundle.writestr(f'{index:03d}－{filename}', export(current_job, current_doc, payload.format))
+            return FileResponse(archive, media_type='application/zip', filename='逐字稿.zip',
+                                background=BackgroundTask(archive.unlink, missing_ok=True))
+        except BaseException:
+            archive.unlink(missing_ok=True)
+            raise
 
     @app.get('/api/glossary',dependencies=[Depends(auth)])
     def glossary():return store.glossary()

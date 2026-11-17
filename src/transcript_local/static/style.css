@@ -3,3 +3,26 @@
 /* IHT wordmark and recovery controls */
 .brand{flex-direction:column;align-items:flex-start;font-family:system-ui,sans-serif;font-weight:800;font-size:12px;letter-spacing:1.2px}.brand-logo{width:132px;height:60px}.rail-caption{letter-spacing:0;font-size:10px}.draft-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}.draft-row span{flex:1;min-width:150px}#draft-dialog{max-width:820px;width:90vw;max-height:85vh;overflow:auto}#update-message{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto}header>span:last-child{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;align-items:center}.service-disabled{pointer-events:none;opacity:.6}
 @media(max-width:700px){.brand{flex-direction:row;align-items:center}.brand-logo{width:62px;height:30px}.brand>span{font-size:9px}.local-tag{display:none}}
+
+.job-selection-actions, #batch-actions, #batch-download {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+#batch-actions { justify-content: space-between; flex-wrap: wrap; margin-top: .75rem; }
+#batch-actions[hidden], #batch-format-options[hidden] { display: none; }
+#batch-download { position: relative; }
+#batch-format-options {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 100%;
+  display: grid;
+  min-width: 7rem;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid currentColor;
+  border-radius: .5rem;
+}
+.selectable-job { cursor: pointer; }
+.selectable-job input { margin-inline-end: .5rem; }

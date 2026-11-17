@@ -244,3 +244,68 @@ def test_browser_review_marker_filters_plays_and_saves(review_page):
     expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
     page.locator('#only-pending').uncheck()
     expect(page.locator('.segment textarea').first).to_have_value('已回聽修正')
+
+
+def test_browser_batch_select_and_export(review_page, store, browser_job, wav, document, tmp_path):
+    from zipfile import ZipFile
+
+    page = review_page
+    original_name = browser_job['name']
+    for name, created in [(original_name, '2000-01-03'), ('中間.wav', '2000-01-02'), ('最後.wav', '2000-01-01')]:
+        job = make_browser_job(store, wav, document, name, created)
+        finish_browser_job(store, job)
+    pending = make_browser_job(store, wav, document, '新完成.wav', '2000-01-04')
+    expect(page.get_by_role('button', name='新完成.wav')).to_be_visible(timeout=10000)
+    page.get_by_role('button', name='選擇', exact=True).click()
+    boxes = page.locator('#jobs input[type=checkbox]')
+    expect(boxes).to_have_count(4)
+    expect(page.get_by_role('button', name='新完成.wav')).to_be_disabled()
+    boxes.nth(0).click()
+    boxes.nth(2).click(modifiers=['Shift'])
+    expect(page.locator('#selection-count')).to_have_text('已選 3 份')
+    boxes.nth(2).click(modifiers=['Meta'])
+    boxes.nth(3).click(modifiers=['Meta'])
+    expect(page.locator('#selection-count')).to_have_text('已選 3 份')
+    finish_browser_job(store, pending)
+    expect(boxes).to_have_count(5, timeout=10000)
+    expect(page.get_by_role('checkbox', name='選擇 新完成.wav')).not_to_be_checked()
+    expect(page.locator('#selection-count')).to_have_text('已選 3 份')
+    expect(page.locator('#recording-name')).to_have_text(original_name)
+
+    page.locator('#segments textarea').first.fill('批次匯出最新校稿')
+    page.locator('#batch-md').click()
+    expect(page.locator('#toast')).to_contain_text('請先儲存')
+    expect(page.locator('#selection-count')).to_have_text('已選 3 份')
+    page.locator('#save').click()
+    expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
+
+    def read_archive(action, suffix):
+        with page.expect_download() as pending_download:
+            action()
+        result = pending_download.value
+        assert result.suggested_filename.endswith('.zip')
+        target = tmp_path / ('batch-' + suffix + '.zip')
+        result.save_as(target)
+        with ZipFile(target) as bundle:
+            entries = bundle.namelist()
+            assert len(set(entries)) == 3
+            assert all(name.endswith('.' + suffix) for name in entries)
+            assert sum(original_name.rsplit('.', 1)[0] in name for name in entries) == 2
+            assert any('批次匯出最新校稿' in bundle.read(name).decode() for name in entries)
+
+    read_archive(lambda: page.locator('#batch-md').click(), 'md')
+    page.locator('#batch-formats').hover()
+    expect(page.get_by_role('button', name='TXT', exact=True)).to_be_visible()
+    page.locator('#selection-count').hover()
+    expect(page.locator('#batch-format-options')).to_be_hidden()
+    page.locator('#batch-formats').focus()
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('button', name='MD', exact=True)).to_be_focused()
+    read_archive(lambda: page.get_by_role('button', name='SRT', exact=True).click(), 'srt')
+    page.keyboard.press('Escape')
+    expect(boxes).to_have_count(0)
+    page.get_by_role('button', name='選擇', exact=True).click()
+    boxes.first.click()
+    with page.expect_download() as single:
+        page.locator('#batch-md').click()
+    assert single.value.suggested_filename.endswith('.md')

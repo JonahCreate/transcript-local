@@ -12,7 +12,17 @@
 <label class="drop-zone" id="drop-zone"><span class="upload-symbol" aria-hidden="true">↥</span><strong>選擇音檔或影片</strong><span>也可以拖曳到這裡 · 支援多檔</span><small>M4A / MP3 / WAV / MP4 等，單檔上限 20 GB</small><input id="files" type="file" multiple accept=".m4a,.mp3,.wav,.mp4,.mov,.aac,.flac,.ogg,.webm,.mkv,.aiff,.opus" aria-label="選擇要轉錄的音訊或影片"></label>
 <ul id="selected-files" class="file-list"></ul><div class="field-pair"><label>辨識模型<select id="model" aria-describedby="model-explanation"><option value="medium">Whisper Medium · 均衡推薦</option><option value="small">Whisper Small · 輕量</option><option value="qwen3">Qwen3-ASR 1.7B · 中文另一選擇</option></select></label><label>錄音語言<select id="language"><option value="zh">中文（含中英混用）</option><option value="en">英文</option><option value="auto">自動偵測</option></select></label></div><p id="model-explanation" class="hint" aria-live="polite"></p>
 <label class="check"><input id="enhance" type="checkbox"><span>輕度降噪與音量平衡<small>小聲或吵雜時可嘗試，可能削弱細小人聲。</small></span></label><label class="check"><input id="force" type="checkbox"><span>建立新版本<small>即使內容相同也重新辨識，舊稿與修改會保留。</small></span></label><button id="submit" class="button primary full" disabled>加入轉錄佇列 <span>→</span></button><p class="privacy-note">檔案只傳給這台電腦的本機服務。模型下載完成後，轉錄可離線進行。</p>
-<div class="section-head jobs-head"><h2>任務記錄</h2><span id="job-count" class="count">0</span></div><div id="jobs" class="jobs"><p class="empty-small">第一份逐字稿，從一段錄音開始。</p></div></section>
+<div class="section-head jobs-head"><h2>任務記錄</h2><div class="job-selection-actions"><span id="job-count" class="count">0</span><button id="select-jobs" class="button subtle" aria-pressed="false">選擇</button></div></div><div id="jobs" class="jobs"><p class="empty-small">第一份逐字稿，從一段錄音開始。</p></div><div id="batch-actions" hidden>
+<span id="selection-count" role="status">已選 0 份</span>
+<div id="batch-download">
+<button id="batch-md" class="button primary" disabled>下載 Markdown</button>
+<button id="batch-formats" class="button subtle" aria-label="選擇匯出格式" aria-expanded="false" aria-controls="batch-format-options" disabled>▾</button>
+<div id="batch-format-options" hidden>
+<button class="button subtle" data-format="md">MD</button>
+<button class="button subtle" data-format="txt">TXT</button>
+<button class="button subtle" data-format="srt">SRT</button>
+<button class="button subtle" data-format="json">JSON</button>
+</div></div></div></section>
 <section class="panel editor-panel"><div class="section-head"><h2>逐字稿校閱</h2><span class="index">02 / REVIEW</span></div><div id="editor-empty" class="editor-empty"><div class="paper-icon" aria-hidden="true">≋</div><h3>讓每個字，更接近原話。</h3><p>從左側選擇完成的任務。<br>點時間回聽，修改文字，再匯出你的版本。</p><span class="quiet-label">不自動分配說話者 · 不用 AI 改寫原意</span></div>
 <div id="editor" hidden><div class="editor-title"><h3 id="recording-name"></h3><span id="save-state">尚未修改</span></div><section id="draft-notice" class="notice" hidden><strong>找到可恢復的草稿</strong><div id="draft-list"></div></section><audio id="audio" controls preload="none" aria-label="錄音回聽"></audio><div class="review-toolbar"><label class="check"><input id="only-pending" type="checkbox"><span id="pending-count">只看待確認片段</span></label><button id="preview" class="button subtle">預覽詞彙替換</button><button id="save" class="button primary" disabled>儲存修改</button></div><p class="hint">待確認是回聽提示，不代表一定有錯；勾選「已確認」記錄校稿進度。</p><div id="segments" class="segments"></div><div class="export-bar"><div><strong>帶走你的文字</strong><small id="export-version">先儲存修改，再選擇格式。</small></div><div id="exports" class="export-actions"></div></div><p class="hint">字幕保留原片段時間；編修文字後不會重新對齊字詞。</p></div></section></div>
 </section>
