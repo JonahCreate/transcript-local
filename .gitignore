@@ -19,3 +19,5 @@ build/
 *.safetensors
 *.srt
 local-data/
+# Local assistant settings are not part of the project.
+.claude/
