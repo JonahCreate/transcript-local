@@ -13,6 +13,7 @@ import time
 import urllib.request
 import webbrowser
 from .states import ACTIVE, UPDATING
+from .supervisor import Supervisor
 from .store import atomic_json, read_json
 
 
@@ -92,6 +93,33 @@ def switch_version(store):
             stop(store)
         atomic_json(rt / 'version.json', {'channel': channel})
         return channel
+
+
+def install_latest_release(store):
+    """Bring the official release up to date with GitHub main, without touching the running service.
+
+    Publishing from the menu calls this, so the official version is current the moment
+    the push succeeds. It reuses the supervisor's own prepare and validate steps, so the
+    result is exactly what the in-app update button would install.
+    """
+    rt = runtime(store)
+    with (rt / 'controller.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if read_json(rt / 'update.json', {}).get('status') in UPDATING:
+            raise RuntimeError('正式版正在更新中，請稍後再試。')
+        supervisor = Supervisor(store.root)
+        if not supervisor.config:
+            raise RuntimeError('請先用 tr 開啟過一次背景服務，再發布。')
+        try:
+            candidate = supervisor.prepare()
+            if candidate['revision'] != read_json(rt / 'current.json', {}).get('revision'):
+                supervisor.validate(candidate)
+                atomic_json(rt / 'current.json', candidate)
+            supervisor.state('complete', '正式版已是最新。', revision=candidate['revision'])
+        except Exception as exc:
+            supervisor.state('failed', str(exc)[-2500:])
+            raise RuntimeError(str(exc)[-600:]) from exc
+        return candidate['revision']
 
 
 def ensure(store, open_browser=True):

@@ -3,7 +3,7 @@ import curses
 import sys
 import subprocess
 import time
-from .service import ensure, healthy, request, stop, runtime, busy_lease, selected_version, switch_version, project_root
+from .service import ensure, healthy, install_latest_release, request, stop, runtime, busy_lease, selected_version, switch_version, project_root
 from .states import ACTIVE, LABELS, UPDATING
 from .store import read_json
 from .update_check import check_remote
@@ -104,7 +104,14 @@ def _screen(screen, store):
                 curses.def_prog_mode()
                 curses.endwin()
                 try:
-                    subprocess.run(['/bin/bash', str(project_root() / 'publish.sh')], check=False)
+                    published = subprocess.run(['/bin/bash', str(project_root() / 'publish.sh')], check=False)
+                    if published.returncode == 0:
+                        # One step: pushing to GitHub also installs the official version.
+                        print('\n正在把最新版安裝為正式版，約需一兩分鐘…', flush=True)
+                        try:
+                            print(f'正式版已更新到 {install_latest_release(store)[:7]}。切換到正式版就能使用。')
+                        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                            print('已發布到 GitHub，但正式版沒有更新成功：' + str(exc))
                     input('按 Enter 返回選單。')
                 finally:
                     curses.reset_prog_mode()

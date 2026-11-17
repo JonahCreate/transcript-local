@@ -38,3 +38,22 @@ def test_terminal_repair_requests_confirmation(store,monkeypatch):
     terminal_update(store,{'port':1},0,lambda text:prompts.append(text) or True,lambda text:None)
     assert '修復' in prompts[0]
     assert calls==['/api/update/check','/api/update']
+
+
+def test_publish_installs_the_official_release(store, monkeypatch):
+    import transcript_local.service as service
+    from transcript_local.store import atomic_json, read_json
+    calls = []
+    class Fake:
+        def __init__(self, root): self.config = {'source': 'x'}
+        def prepare(self): return {'revision': 'new', 'project': 'p', 'python': 'py'}
+        def validate(self, candidate): calls.append('validate')
+        def state(self, status, message, **extra): calls.append(status)
+    monkeypatch.setattr(service, 'Supervisor', Fake)
+    rt = service.runtime(store)
+    atomic_json(rt / 'current.json', {'revision': 'old'})
+    assert service.install_latest_release(store) == 'new'
+    assert calls == ['validate', 'complete'] and read_json(rt / 'current.json')['revision'] == 'new'
+    calls.clear()
+    service.install_latest_release(store)  # already current: nothing to validate or switch
+    assert calls == ['complete']
