@@ -57,3 +57,28 @@
   border-radius: .5rem;
 }
 #export-format-options[hidden] { display: none; }
+
+/* Quiet reading surface and explicit task selection. */
+.rail { background: #efede6; }
+.page-title { margin: 24px 0; }
+h1 { font-size: 36px; letter-spacing: 0; }
+.index, .eyebrow { display: none; }
+.job { padding: 14px 12px; border-radius: 6px; }
+.job.active { background: var(--pale); box-shadow: inset 3px 0 var(--accent); }
+.job-title { font-size: 14px; font-weight: 600; }
+.job-meta { line-height: 1.8; }
+.editor-title { flex-wrap: wrap; }
+.editor-title h3 { font-size: 21px; font-weight: 600; }
+.segment { padding: 24px 0; gap: 20px; }
+.segment textarea { font-size: 16px; line-height: 2; background: transparent; border-color: transparent; }
+.segment textarea:hover { border-color: var(--line); }
+.segment textarea:focus { background: white; border-color: var(--accent); }
+.time { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.review-reason { background: #fcf1e2; padding: 3px 6px; border-radius: 4px; }
+.export-bar { background: var(--white); color: var(--ink); padding: 12px 20px; }
+.export-bar audio { flex: 1 1 240px; width: auto; max-width: 400px; margin: 0; }
+.export-actions { margin-top: 0; }
+#export-format-options, #batch-format-options { background: var(--white); color: var(--ink); border-color: var(--line); padding: 6px; }
+@media (min-width: 1101px) { .export-bar { left: 224px; } }
+@media (min-width: 851px) and (max-width: 1100px) { .export-bar { left: 180px; } }
+@media (max-width: 850px) { .export-bar audio { flex-basis: 100%; max-width: none; width: 100%; } .segment { gap: 12px; } }

@@ -214,13 +214,19 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
     def update_status():return updater.status()
 
     @app.post('/api/update/check',dependencies=[Depends(auth)])
-    def check_update():return updater.check()
+    def check_update():
+        if os.environ.get('IHT_REVISION') == 'development':
+            return {'check_status': 'check_failed', 'can_update': False,
+                    'message': '請在 tr 選單切回正式版，再檢查更新。'}
+        return updater.check()
 
     def writable():
         if manager.updating:raise ValueError('程式正在更新，請稍候')
 
     @app.post('/api/update',dependencies=[Depends(auth)],status_code=202)
     def update_start(response:Response):
+        if os.environ.get('IHT_REVISION') == 'development':
+            raise HTTPException(409, '請切回正式版再更新。')
         checked=updater.check()
         with edit_lock:started=updater.start(checked)
         if not started:response.status_code=200

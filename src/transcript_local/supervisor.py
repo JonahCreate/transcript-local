@@ -84,11 +84,21 @@ class Supervisor:
         except (OSError, ValueError, KeyError, HTTPReadError): pass
         return None
 
+    def selected_release(self):
+        release = read(self.rt / 'current.json')
+        if read(self.rt / 'version.json', {}).get('channel') == 'development':
+            project = Path(self.config['source'])
+            return {'project': str(project), 'python': str(project / '.venv/bin/python'),
+                    'revision': 'development', 'source': str(project / 'src')}
+        return release
+
     def launch(self, current, recover=False, timeout=35):
         (self.rt / 'service.json').unlink(missing_ok=True)
         env = dict(os.environ, TRANSCRIPT_LOCAL_PROJECT=self.config['source'], TRANSCRIPT_LOCAL_DATA=str(self.root),
                    IHT_MANAGED='1', IHT_SERVICE_TOKEN=self.web_token, IHT_SERVICE_PORT=str(self.web_port), IHT_RECOVER_CRASH='1' if recover else '0', IHT_REVISION=current['revision'])
         env.pop('PYTHONPATH', None)
+        if current.get('source'):
+            env['PYTHONPATH'] = current['source']
         log_path = self.rt / 'service.log'; rotate(log_path)
         with log_path.open('ab') as log:
             self.child = subprocess.Popen([current['python'], '-m', 'transcript_local.cli', 'serve', '--no-browser'],
@@ -254,7 +264,7 @@ class Supervisor:
             except BlockingIOError: return
             write(self.rt / 'supervisor.json', {'secret': self.secret, 'pid': os.getpid()})
             for name in ('control.json', 'update-request.json'): (self.rt / name).unlink(missing_ok=True)
-            current = read(self.rt / 'current.json')
+            current = self.selected_release()
             if not self.launch(current):
                 self.terminate(force=True)
                 last = read(self.rt / 'recovery.json', {}).get('last_restart', 0)
@@ -296,7 +306,7 @@ class Supervisor:
                             self.state('failed', '服務再次異常停止，已停止自動恢復。請重新開啟選單查看日誌。')
                             self.stopping = True; continue
                         write(self.rt / 'recovery.json', {'last_restart': time.time()})
-                        if not self.launch(read(self.rt / 'current.json'), recover=True):
+                        if not self.launch(self.selected_release(), recover=True):
                             self.state('failed', '服務再次異常停止，已停止自動恢復。請查看 service.log。')
                             self.terminate(force=True); self.stopping = True
                 time.sleep(.2)

@@ -1,19 +1,20 @@
 from http.client import HTTPException as HTTPReadError
 import curses
 import sys
+import subprocess
 import time
-from .service import ensure, healthy, request, stop, runtime, busy_lease
+from .service import ensure, healthy, request, stop, runtime, busy_lease, selected_version, switch_version, project_root
 from .store import read_json, ACTIVE
 from .update_check import check_remote
 
 LOGO = [r'  ___ _   _ _____', r' |_ _| |_| |_   _|', r'  | ||  _  | | |', r' |___|_| |_| |_|', '  I HATE TRANSCRIPTION.', '  Less typing. More living.']
-OPTIONS = ['開啟網頁工作台', '查看轉錄進度', '檢查更新', '停止背景服務', '離開選單']
+OPTIONS = ['開啟網頁工作台', '查看轉錄進度', '檢查更新', '停止背景服務', '離開選單', '切換版本', '發布開發版到 GitHub']
 
 
 def choice(key, selected):
     if key == curses.KEY_UP: return (selected - 1) % len(OPTIONS), False
     if key == curses.KEY_DOWN: return (selected + 1) % len(OPTIONS), False
-    if ord('1') <= key <= ord('5'): return key - ord('1'), True
+    if ord('1') <= key <= ord('7'): return key - ord('1'), True
     return selected, key in (10, 13, curses.KEY_ENTER)
 
 
@@ -55,7 +56,7 @@ def _screen(screen, store):
                 screen.addnstr(y, 2, text, max(1, width - 4), attr)
             except curses.error: pass
     def confirm(text):
-        put(15, text + ' [y/N]'); screen.refresh(); screen.timeout(-1)
+        put(17, text + ' [y/N]'); screen.refresh(); screen.timeout(-1)
         key = screen.getch(); screen.timeout(1000)
         return key in (ord('y'), ord('Y'))
     while True:
@@ -68,11 +69,15 @@ def _screen(screen, store):
         for i, line in enumerate(LOGO): put(i, line, curses.color_pair(1) if curses.has_colors() else curses.A_BOLD)
         active = sum(j['status'] in ACTIVE for j in jobs)
         state = '背景服務執行中' if info else '服務尚未啟動'
+        development = selected_version(store) == 'development'
+        put(6, '目前版本 · ' + ('本機開發版' if development else '正式版'))
         put(7, f'● {state} · {active} 個任務處理中')
         update = read_json(runtime(store) / 'update.json', {})
         if update.get('status') in {'requested','preparing','validating','switching'}: state = '更新進行中';put(7,'● 更新進行中 · '+update.get('message',''))
         for i, option in enumerate(OPTIONS):
             text = option
+            if i == 5:
+                text = '切換至正式版' if development else '切換至本機開發版'
             if i==2:
                 if update.get('status') in {'requested','preparing','validating','switching'}:text='更新進行中 · 請稍候'
                 elif checked.get('can_update'):text='↑ 有新版 · 檢查與更新'
@@ -80,7 +85,7 @@ def _screen(screen, store):
                 elif checked.get('check_status')=='check_failed':text='檢查更新 · 無法連線'
             if i==0 and not info and busy_lease(store):text='服務失去回應 · 檢查修復說明'
             put(9 + i, f'{"❯" if i == selected else " "} {i + 1}  {text}', curses.A_REVERSE if i == selected else 0)
-        put(16, message[:300]); put(18, '↑↓ 選擇 · Enter 確認 · 數字快捷 · Esc 離開')
+        put(18, message[:300]); put(20, '↑↓ 選擇 · Enter 確認 · 數字快捷 · Esc 離開')
         screen.refresh(); key = read_key(screen)
         if key in (27, ord('q')): return 0
         selected, activate = choice(key, selected)
@@ -91,7 +96,28 @@ def _screen(screen, store):
                 put(16, '正在準備工作台…'); screen.refresh(); ensure(store); message = '已開啟工作台。關閉此選單不會停止背景轉錄。'
             elif selected == 1:
                 progress(screen,store)
+            elif selected == 6:
+                if not development:
+                    message = '請先切換到本機開發版。'
+                    continue
+                curses.def_prog_mode()
+                curses.endwin()
+                try:
+                    subprocess.run(['/bin/bash', str(project_root() / 'publish.sh')], check=False)
+                    input('按 Enter 返回選單。')
+                finally:
+                    curses.reset_prog_mode()
+                    screen.refresh()
+                message = '發布程序已結束，請查看上方結果。'
+            elif selected == 5:
+                if confirm('請先儲存網頁校稿。確定切換版本？'):
+                    switch_version(store)
+                    checked = {}
+                    message = '已切換，請選擇開啟網頁工作台。'
             elif selected == 2:
+                if development:
+                    message = '請切回正式版，再檢查更新。'
+                    continue
                 if update.get('status') in {'requested','preparing','validating','switching'}:
                     message='更新已在進行中，請稍候。';continue
                 def show(text):
