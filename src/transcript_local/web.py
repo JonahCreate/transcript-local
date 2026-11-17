@@ -8,6 +8,7 @@ import secrets
 import shutil
 import threading
 import subprocess
+import time
 from typing import Literal
 from urllib.parse import quote
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Depends
@@ -21,7 +22,8 @@ from . import __version__
 from .manager import Manager
 from .models import Models
 from .updater import Updater
-from .review import FORMAT_NAMES, export, preview, save_edits
+from .review import FORMAT_NAMES, export, learned, preview, save_edits
+from .assistant import Assistant, advice
 
 ExportFormat = Literal['md','txt','srt','json']
 
@@ -120,6 +122,11 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
     manager=manager or Manager(store)
     models=Models(store)
     updater=Updater(manager,restart,models)
+    assistant=Assistant()
+    started=time.time()
+    def stale():
+        # In the development channel the page is read fresh from disk while this process keeps old code.
+        return any(p.stat().st_mtime>started for p in Path(__file__).parent.glob('*.py'))
     instance_id=instance_id or secrets.token_hex(16)
     cookie_name='iht_session_'+hashlib.sha256(str(store.root).encode()).hexdigest()[:12]
     edit_lock=threading.RLock()
@@ -209,7 +216,7 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
         disk=shutil.disk_usage(store.root)
         return {'data_path':str(store.root),'used_bytes':store.usage(),'free_bytes':disk.free,
                 'trash_bytes':store.usage(store.root/'trash') if (store.root/'trash').exists() else 0,
-                'ffmpeg':bool(shutil.which('ffmpeg')),**models.status()}
+                'ffmpeg':bool(shutil.which('ffmpeg')),'advice':advice(),'stale':stale(),**models.status()}
 
     @app.get('/api/update',dependencies=[Depends(auth)])
     def update_status():return updater.status()
@@ -428,6 +435,23 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
             value=payload.model_dump(by_alias=True)
             atomic_json(store.root/'glossary.json',value)
             return value
+
+    @app.get('/api/glossary/suggestions',dependencies=[Depends(auth)])
+    def glossary_suggestions():
+        docs=[d for d in (read_json(store.job_dir(j['id'])/'transcript.json') for j in store.list()) if d]
+        return learned(docs,store.glossary()['rules'])
+
+    @app.post('/api/jobs/{job_id}/ai',dependencies=[Depends(auth)],status_code=202)
+    def ai_start(job_id:str):
+        writable()
+        return assistant.start(job_id,doc(job_id),store.glossary())
+
+    @app.get('/api/ai',dependencies=[Depends(auth)])
+    def ai_status():return assistant.status()
+
+    @app.post('/api/ai/cancel',dependencies=[Depends(auth)])
+    def ai_cancel():
+        assistant.cancel();return assistant.status()
 
     def glossary_hash(value):return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
 

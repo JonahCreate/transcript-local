@@ -23,7 +23,7 @@ async function api(path, options) {
   return response.json();
 }
 function protect(fn) {return async (...args) => {try {await fn(...args);} catch (e) {notify(e.message);}};}
-function changeView(name) {document.querySelectorAll('.view').forEach(n => n.hidden=n.id!==name); document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active',n.dataset.view===name));}
+function changeView(name) {document.querySelectorAll('.view').forEach(n => n.hidden=n.id!==name); document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active',n.dataset.view===name)); if(name==='glossary'&&state.authenticated)protect(loadLearned)();}
 document.querySelectorAll('[data-view]').forEach(n => n.addEventListener('click',()=>changeView(n.dataset.view)));
 $('setup-shortcut').onclick=$('get-started').onclick=()=>changeView('setup');
 function setFiles(files) {state.files=Array.from(files); $('selected-files').replaceChildren(...state.files.map(f=>el('li',`${f.name} · ${bytes(f.size)}`))); updateSubmit();}
@@ -46,8 +46,10 @@ $('submit').onclick=protect(async()=>{
 });
 async function refreshStatus() {
   state.status=await api('/status');const s=state.status;
+  if(s.stale&&!state.stopped){$('service-notice').hidden=false;$('service-message').textContent='程式檔案已更新，但背景服務還在跑舊版，新功能可能無法使用。請先儲存修改，在終端機輸入 tr，選「停止背景服務」，再選「開啟網頁工作台」。';}
   $('setup-notice').hidden=s.models.some(m=>m.ready)&&s.ffmpeg;
   $('data-path').textContent=s.data_path;$('used-space').textContent=bytes(s.used_bytes);$('free-space').textContent=bytes(s.free_bytes);$('trash-space').textContent=bytes(s.trash_bytes);$('ffmpeg-status').textContent=s.ffmpeg?'已安裝':'缺少：brew install ffmpeg';
+  renderAdvice(s.advice);
   $('models').replaceChildren(...s.models.map(m=>{
     const card=el('section',undefined,'panel model-card');card.append(el('h3',modelInfo[m.name].title),el('span',m.ready?'已準備完成 · 可離線使用':`完整模型約 ${bytes(m.estimated_bytes)}，已下載部分不重複下載`,'model-size'),el('p',modelInfo[m.name].description));
     const active=s.download.name===m.name;card.append(el('p',m.ready?(m.source==='cache'?'已下載 · 使用既有 Hugging Face 快取':'已下載 · 儲存在本工具模型資料夾'):active&&s.download.status==='downloading'?'下載中，請保持程式開啟…':active&&s.download.status==='failed'?`下載失敗：${s.download.error}`:`尚未就緒：缺少${m.missing.join('、')}`,'model-status'));
@@ -60,7 +62,7 @@ async function refreshJobs() {
   const completed=jobs.filter(j=>j.status==='complete'&&['queued','running'].includes(jobStatus.get(j.id))).sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id));
   for(const j of jobs)jobStatus.set(j.id,j.status);
   if(jobsInitialized&&completed.length){pendingCompletions.push(...completed.map(j=>j.id));if(state.current)notify(completed.length===1?`「${completed[0].name}」已完成，可從任務記錄點擊查看。`:`${completed.length} 份逐字稿已完成，可從任務記錄點擊查看。`);}
-  if(!state.stopped)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length;
+  if(!state.stopped&&!state.status?.stale)$('service-notice').hidden=true;state.jobs=jobs;$('job-count').textContent=jobs.length;
   renderJobs();
   scheduleCompleted();
 }
@@ -215,7 +217,10 @@ function renderSegments(){
     play.onclick=protect(async()=>{const audio=$('audio');audio.currentTime=r.start;audio.dataset.end=r.end;await audio.play();});meta.append(play);
     const label=el('label',undefined,'check');const check=el('input');check.type='checkbox';check.checked=r.reviewed;check.onchange=()=>{const current=state.doc.segments.find(x=>x.id===r.id);current.reviewed=check.checked;markDirty(r.id);row.dataset.pending=String(!!current.review_reasons.length&&!current.reviewed);filterSegments();};label.append(check,el('span','已確認'));meta.append(label);
     const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);fit(input);};input.onclick=event=>{if(event.altKey)protect(()=>playFrom(r,input))();};
-    const wrap=el('div',undefined,'text-wrap');const karaoke=el('div',undefined,'karaoke');karaoke.setAttribute('aria-hidden','true');wrap.append(karaoke,input);body.append(wrap);
+    const wrap=el('div',undefined,'text-wrap');const karaoke=el('div',undefined,'karaoke');karaoke.setAttribute('aria-hidden','true');const doubt=el('div',undefined,'karaoke doubt');doubt.setAttribute('aria-hidden','true');wrap.append(karaoke,doubt,input);body.append(wrap);
+    // Underline the words the recogniser was least sure of, until the segment is edited or confirmed.
+    if(r.edited_text==null&&!r.reviewed){let at=0;for(const w of wordSpans(r,input.value).filter(w=>w.low)){doubt.append(input.value.slice(at,w.from),el('u',input.value.slice(w.from,w.to)));at=w.to;}}
+    input.addEventListener('input',()=>doubt.replaceChildren());
     if(r.review_reasons.length){
       const reason=el('button',r.review_reasons.join('；')+' · 回聽','button subtle review-reason');
       reason.onclick=play.onclick;body.append(reason);
@@ -226,6 +231,8 @@ function renderSegments(){
 function filterSegments(){
   const pending=state.doc.segments.filter(segment=>segment.review_reasons.length&&!segment.reviewed).length;
   $('pending-count').textContent='只看待確認片段（'+pending+' 段）';
+  const all=state.doc.segments.length,done=state.doc.segments.filter(segment=>segment.reviewed).length;
+  $('review-bar').max=all||1;$('review-bar').value=done;$('review-count').textContent=`已確認 ${done}／${all} 段`;
   const query=$('find').value.trim().toLowerCase();let shown=0;
   document.querySelectorAll('.segment').forEach(n=>{n.hidden=($('only-pending').checked&&n.dataset.pending!=='true')||(!!query&&!n.querySelector('textarea').value.toLowerCase().includes(query));if(!n.hidden)shown++;});
   $('find-count').textContent=query?`符合 ${shown} 段`:'';
@@ -247,7 +254,7 @@ function wordSpans(r,text){
   let words=(r.words||[]).filter(w=>w.text.trim());
   if(!words.length)words=[...text].map((c,i,all)=>({text:c,start:r.start+(r.end-r.start)*i/all.length,end:r.start+(r.end-r.start)*(i+1)/all.length}));
   const total=words.reduce((n,w)=>n+w.text.trim().length,0);let seen=0;
-  return words.map(w=>{const from=Math.round(seen/total*text.length);seen+=w.text.trim().length;return {from,to:Math.round(seen/total*text.length),start:w.start,end:w.end};});
+  return words.map(w=>{const from=Math.round(seen/total*text.length);seen+=w.text.trim().length;return {from,to:Math.round(seen/total*text.length),start:w.start,end:w.end,low:w.probability<.5};});
 }
 async function playFrom(r,input){
   const audio=$('audio'),word=wordSpans(r,input.value).find(w=>input.selectionStart<w.to);
@@ -276,7 +283,7 @@ $('speed').onchange=()=>setSpeed($('speed').value);
 try{setSpeed(localStorage.getItem('iht-speed')||1);}catch{setSpeed(1);}
 // Review shortcuts. Option/Command combinations only, so plain typing and the Chinese input method are untouched.
 document.addEventListener('keydown',event=>{
-  if(event.isComposing||$('editor').hidden||document.querySelector('dialog[open]'))return;
+  if(event.isComposing||$('editor').hidden||$('workspace').hidden||document.querySelector('dialog[open]'))return;
   const audio=$('audio'),row=document.activeElement?.closest?.('.segment'),mod=event.metaKey||event.ctrlKey;
   const segment=row&&state.doc.segments.find(x=>String(x.id)===row.dataset.id);
   const rows=()=>[...document.querySelectorAll('.segment:not([hidden])')];
@@ -313,11 +320,79 @@ async function save(){
   } finally {fields.forEach(n=>n.disabled=false);$('save').disabled=!state.dirty;state.saving=false;}
 }
 $('save').onclick=protect(save);
-$('save-glossary').onclick=protect(async()=>{
+async function saveGlossary(){
   const prompts=$('prompts').value.split('\n').map(s=>s.trim()).filter(Boolean);const rules=[];
   for(const line of $('rules').value.split('\n').filter(s=>s.trim())){const pair=line.split('→');if(pair.length!==2||!pair[0].trim())throw new Error('替換規則請使用「誤辨詞 → 正確詞」，每行一筆。');rules.push({from:pair[0].trim(),to:pair[1].trim()});}
   await api('/glossary',{method:'PUT',body:{prompts,rules}});notify('詞彙表已儲存。提示詞會用於之後建立的任務。');
+}
+$('save-glossary').onclick=protect(saveGlossary);
+// Glossary learning: repeated hand corrections become one-click rules.
+async function loadLearned(){
+  const items=await api('/glossary/suggestions');
+  $('learned').replaceChildren(...items.map(item=>{
+    const row=el('div',undefined,'draft-row');row.append(el('span',`${item.from} → ${item.to}`),el('small',`你改過 ${item.count} 次`,'hint'));
+    const add=el('button','加入詞彙表','button subtle');add.onclick=protect(async()=>{
+      const lines=text=>text.split('\n').map(s=>s.trim()).filter(Boolean);
+      $('rules').value=[...lines($('rules').value),`${item.from} → ${item.to}`].join('\n');
+      if(!lines($('prompts').value).includes(item.to))$('prompts').value=[...lines($('prompts').value),item.to].join('\n');
+      await saveGlossary();await loadLearned();});
+    row.append(add);return row;}));
+  if(!items.length)$('learned').append(el('p','目前還沒有。校稿時改幾個詞並儲存，這裡就會出現建議。','empty-small'));
+}
+// What this Mac can run, and whether a local proofreading model is ready.
+function renderAdvice(a){
+  if(!a)return;const names={medium:'Whisper Medium',small:'Whisper Small',qwen3:'Qwen3-ASR 1.7B'};
+  const ai=a.ai_model?`已就緒，使用 ${a.ai_model}。`+(a.ai_model===a.ai_suggested?'':`這台電腦建議改用 ${a.ai_suggested}：`)
+    :a.ai_running?'Ollama 已啟動，但還沒有模型。請在終端機執行：':a.ai_installed?'已安裝 Ollama，但它沒有在執行。開啟 Ollama 後，執行：':'尚未安裝。請在終端機執行 brew install ollama，開啟 Ollama 後再執行：';
+  const line=el('p',ai);if(a.ai_model!==a.ai_suggested)line.append(' ',el('code','ollama pull '+a.ai_suggested));
+  $('advice').replaceChildren(el('p',`${a.chip} · ${a.ram_gb} GB 記憶體`,'path'),
+    el('h3','辨識模型'),el('p',`建議用 ${names[a.asr]}。`+(a.asr_alternative?`記憶體足夠，也能跑 ${names[a.asr_alternative]} 做比較。`:'記憶體較少，較大的模型可能很慢。')),
+    el('h3','校稿 AI（找錯字）'),line,el('p','校稿 AI 透過 Ollama 在這台電腦上執行，逐字稿不會離開電腦。','hint'));
+}
+// Local AI proofreading: runs in the background, then offers changes to tick. Nothing is applied unasked.
+let aiTimer,aiRunning=false;
+function renderAI(task){
+  const finished=aiRunning&&task.status!=='running';aiRunning=task.status==='running';clearTimeout(aiTimer);
+  $('ai').textContent=aiRunning?`AI 找錯字中 ${task.done}/${task.total} · 停止`:'AI 找錯字';
+  if(aiRunning){aiTimer=setTimeout(protect(async()=>renderAI(await api('/ai'))),1500);return;}
+  if(!finished)return;
+  if(task.job_id!==state.current){notify('AI 檢查的是另一份稿件，請回到那份稿件重新執行。');return;}
+  // You can keep reviewing while it runs: only suggestions for segments you have not touched since are kept.
+  const changes=task.changes.filter(c=>{const row=state.doc.segments.find(r=>r.id===c.id);return row&&!row.reviewed&&(row.edited_text??row.traditional_text)===c.before;});
+  if(task.status==='failed')notify(`AI 找錯字沒有完成（${task.error}）`+(changes.length?'，先列出已找到的部分。':''));
+  else if(!changes.length)notify(`AI 檢查了 ${task.total} 段，沒有找到需要修改的地方。`);
+  if(!changes.length)return;
+  $('ai-note').textContent=`由本機模型 ${task.model} 提出，僅供參考。只有勾選的片段會帶入編輯區，之後仍要按「儲存修改」。涉及數字或否定詞的項目請先回聽再決定。`;
+  $('ai-all').checked=false;$('ai-all').onchange=()=>{for(const box of $('ai-list').querySelectorAll('input'))if(!box.dataset.risky)box.checked=$('ai-all').checked;};
+  $('ai-list').replaceChildren(...changes.map(c=>{const row=el('div',undefined,'preview-row');const label=el('label',undefined,'check');const check=el('input');check.type='checkbox';check.dataset.id=c.id;if(c.risky)check.dataset.risky='1';label.append(check,el('span',time(c.start)+(c.risky?' · 請先回聽':'')));
+    row.append(label,el('div',c.before,'preview-before'),el('div',c.after,'preview-after'),el('div',c.fixes.map(f=>`${f.from} → ${f.to}：${f.reason}`).join('；'),'hint'));return row;}));
+  $('apply-ai').onclick=()=>{
+    let count=0;for(const box of $('ai-list').querySelectorAll('input:checked')){const change=changes.find(c=>c.id===Number(box.dataset.id)),row=state.doc.segments.find(r=>r.id===change.id);
+      if(row&&(row.edited_text??row.traditional_text)===change.before){row.edited_text=change.after;state.changed.add(row.id);count++;}}
+    $('ai-dialog').close();if(!count){notify('請至少勾選一個片段。');return;}
+    renderSegments();markDirty();fitAll();notify(`已帶入 ${count} 段修改，原始辨識保留。確認後請按儲存修改。`);
+  };
+  $('ai-dialog').showModal();
+}
+$('close-ai').onclick=()=>$('ai-dialog').close();
+$('ai').onclick=protect(async()=>{
+  if(aiRunning){await api('/ai/cancel',{method:'POST'});return;}
+  if(state.dirty){notify('請先儲存修改，再讓 AI 找錯字。');return;}
+  renderAI(await api(`/jobs/${state.current}/ai`,{method:'POST'}));
 });
+// Palettes. Click the button to step to the next one; hover or focus it to choose from the list.
+const themes=[['auto','跟隨系統'],['paper','紙墨'],['ink','夜硯'],['celadon','青瓷'],['tea','茶霧'],['soot','松煙']];
+function savedTheme(){try{const id=localStorage.getItem('iht-theme');return themes.some(t=>t[0]===id)?id:'auto';}catch{return 'auto';}}
+function setTheme(id){
+  try{localStorage.setItem('iht-theme',id);}catch{}
+  document.documentElement.dataset.theme=id==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'ink':'paper'):id;
+  $('theme-name').textContent=themes.find(t=>t[0]===id)[1];
+  for(const item of $('theme-menu').children)item.setAttribute('aria-checked',String(item.dataset.id===id));
+}
+$('theme-menu').replaceChildren(...themes.map(([id,name])=>{const item=el('button',undefined,'theme-item');item.setAttribute('role','menuitemradio');item.dataset.id=id;const swatch=el('span',undefined,'swatch');if(id!=='auto')swatch.dataset.theme=id;item.append(swatch,name);item.onclick=()=>{setTheme(id);item.blur();};return item;}));
+$('theme-button').onclick=()=>{const ids=themes.slice(1).map(t=>t[0]);setTheme(ids[(ids.indexOf(document.documentElement.dataset.theme)+1)%ids.length]);};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(savedTheme()==='auto')setTheme('auto');});
+setTheme(savedTheme());
 $('preview').onclick=protect(async()=>{
   if(state.dirty){notify('請先儲存修改，再預覽替換。');return;}
   const p=await api(`/jobs/${state.current}/preview`,{method:'POST'});state.preview=p;
@@ -341,6 +416,7 @@ async function init(){
   const prefs=await api('/preferences');const last=state.jobs.find(j=>j.id===prefs.job_id&&j.status==='complete');if(last)await openJob(last,prefs.position||0,prefs.segment_position||0);
   jobsInitialized=true;await refreshJobs();
   protect(loadExportFolder)();
+  protect(async()=>renderAI(await api('/ai')))();
   state.checking=true;api('/update/check',{method:'POST'}).then(result=>{state.checking=false;renderUpdate(result);}).catch(()=>{state.checking=false;});
 }
 protect(init)();

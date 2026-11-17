@@ -1,3 +1,5 @@
+from collections import Counter
+from difflib import SequenceMatcher
 import json
 from .store import atomic_json, read_json, now
 
@@ -47,6 +49,32 @@ def save_edits(path, payload):
     doc['updated_at'] = now()
     atomic_json(path, doc)
     return doc
+
+def learned(docs, rules):
+    """Corrections the user keeps making by hand, offered as glossary rules."""
+    known = {rule['from'] for rule in rules}
+    counts = Counter()
+    for doc in docs:
+        for r in doc['segments']:
+            before, after = r['traditional_text'], r.get('edited_text')
+            if after is None or after == before:
+                continue
+            for op, a, b, c, d in SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+                # Punctuation-only edits are not vocabulary.
+                if op != 'replace' or not (any(ch.isalnum() for ch in before[a:b]) and any(ch.isalnum() for ch in after[c:d])):
+                    continue
+                # A one-character rule would also hit unrelated words, so carry a neighbour along.
+                if b - a < 2 or d - c < 2:
+                    if a and c and before[a-1].isalnum():
+                        a -= 1; c -= 1
+                    elif b < len(before) and d < len(after) and before[b].isalnum():
+                        b += 1; d += 1
+                old, new = before[a:b], after[c:d]
+                if 2 <= len(old) <= 12 and 1 <= len(new) <= 12 and old not in known and '\n' not in old + new:
+                    counts[old, new] += 1
+    # A single edit is usually about that one sentence; a repeated one is vocabulary.
+    return [{'from': old, 'to': new, 'count': count} for (old, new), count in counts.most_common(20) if count > 1]
+
 
 def preview(doc, rules):
     changes = []

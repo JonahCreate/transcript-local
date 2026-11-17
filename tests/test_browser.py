@@ -407,3 +407,29 @@ def test_review_word_playback_search_and_shortcuts(review_page):
     assert page.evaluate("document.activeElement.closest('.segment').dataset.id") == '1'
     page.keyboard.press('Control+s')
     expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
+
+
+def test_palette_progress_and_learned_glossary(review_page, store, browser_job):
+    page = review_page
+    path = store.job_dir(browser_job['id'])/'transcript.json'
+    transcript = read_json(path)
+    transcript['segments'][1].update(raw_text='供钞', traditional_text='供鈔')  # the same mistake twice
+    atomic_json(path, transcript)
+    page.reload()
+    expect(page.locator('#review-count')).to_have_text('已確認 0／2 段')
+    assert page.evaluate('document.documentElement.dataset.theme') == 'paper'
+    page.locator('#theme-button').click()  # one click steps to the next palette
+    assert page.evaluate('document.documentElement.dataset.theme') == 'ink'
+    page.locator('#theme-button').hover()
+    page.get_by_role('menuitemradio', name='茶霧').click()
+    page.reload()
+    assert page.evaluate('document.documentElement.dataset.theme') == 'tea'
+    expect(page.locator('#segments textarea')).to_have_count(2)  # wait for the reload before filling
+    for area in page.locator('#segments textarea').all(): area.fill('共槽')
+    page.locator('#save').click()
+    expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
+    page.locator('[data-view=glossary]').click()
+    page.get_by_role('button', name='加入詞彙表').click()
+    expect(page.locator('#rules')).to_have_value('供鈔 → 共槽')
+    expect(page.locator('#prompts')).to_have_value('共槽')
+    expect(page.locator('#learned')).to_contain_text('目前還沒有')

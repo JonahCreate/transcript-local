@@ -6,6 +6,7 @@ where they live:
   update check     not_checked | up_to_date | update_available |
                    repair_available | check_failed | unknown     (update_check.py)
   worker progress  preparing -> loading -> transcribing -> complete (worker.py)
+  AI proofreading  idle -> running -> complete | failed           (assistant.py)
 
 supervisor.py is copied out of the package and must stay stdlib-only, so it
 repeats the update strings; tests/test_states.py fails if they drift.

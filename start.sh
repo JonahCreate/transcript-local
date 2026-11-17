@@ -6,9 +6,8 @@ if ! command -v uv >/dev/null 2>&1 || [[ ! -x .venv/bin/transcript-local ]]; the
   exit 1
 fi
 export TRANSCRIPT_LOCAL_PROJECT="$PWD"
-if [[ $# -eq 0 ]]; then
-  export PYTHONPATH="$PWD/src"
-  exec .venv/bin/python -m transcript_local.cli
-fi
-# Launch installed code without uv network checks: cached models work offline.
-exec .venv/bin/transcript-local "$@"
+# Always run this checkout's source, with or without arguments. The copy installed in
+# .venv can be older, and its supervisor would start the wrong version.
+# No uv network checks here: cached models work offline.
+export PYTHONPATH="$PWD/src"
+exec .venv/bin/python -m transcript_local.cli "$@"
