@@ -214,7 +214,8 @@ function renderSegments(){
     const meta=el('div',undefined,'segment-meta');const play=el('button',`${time(r.start)} ↗`,'time');play.setAttribute('aria-label',`回聽 ${time(r.start)} 到 ${time(r.end)}`);
     play.onclick=protect(async()=>{const audio=$('audio');audio.currentTime=r.start;audio.dataset.end=r.end;await audio.play();});meta.append(play);
     const label=el('label',undefined,'check');const check=el('input');check.type='checkbox';check.checked=r.reviewed;check.onchange=()=>{const current=state.doc.segments.find(x=>x.id===r.id);current.reviewed=check.checked;markDirty(r.id);row.dataset.pending=String(!!current.review_reasons.length&&!current.reviewed);filterSegments();};label.append(check,el('span','已確認'));meta.append(label);
-    const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);fit(input);};body.append(input);
+    const body=el('div');const input=el('textarea');input.value=r.edited_text??r.traditional_text;input.setAttribute('aria-label',`${time(r.start)} 的逐字稿`);input.oninput=()=>{state.doc.segments.find(x=>x.id===r.id).edited_text=input.value;markDirty(r.id);fit(input);};input.onclick=event=>{if(event.altKey)protect(()=>playFrom(r,input))();};
+    const wrap=el('div',undefined,'text-wrap');const karaoke=el('div',undefined,'karaoke');karaoke.setAttribute('aria-hidden','true');wrap.append(karaoke,input);body.append(wrap);
     if(r.review_reasons.length){
       const reason=el('button',r.review_reasons.join('；')+' · 回聽','button subtle review-reason');
       reason.onclick=play.onclick;body.append(reason);
@@ -225,8 +226,11 @@ function renderSegments(){
 function filterSegments(){
   const pending=state.doc.segments.filter(segment=>segment.review_reasons.length&&!segment.reviewed).length;
   $('pending-count').textContent='只看待確認片段（'+pending+' 段）';
-  document.querySelectorAll('.segment').forEach(n=>n.hidden=$('only-pending').checked&&n.dataset.pending!=='true');
+  const query=$('find').value.trim().toLowerCase();let shown=0;
+  document.querySelectorAll('.segment').forEach(n=>{n.hidden=($('only-pending').checked&&n.dataset.pending!=='true')||(!!query&&!n.querySelector('textarea').value.toLowerCase().includes(query));if(!n.hidden)shown++;});
+  $('find-count').textContent=query?`符合 ${shown} 段`:'';
 }
+$('find').oninput=filterSegments;
 $('only-pending').onchange=filterSegments;
 // Textareas grow with their text; CSS field-sizing does it where supported.
 const nativeFit=CSS.supports('field-sizing','content');
@@ -236,18 +240,57 @@ function revealActiveJob(){const box=document.querySelector('.intake'),active=bo
   if(active.offsetTop<box.scrollTop||active.offsetTop+active.offsetHeight>box.scrollTop+box.clientHeight)box.scrollTop=active.offsetTop-box.clientHeight/3;}
 function fitAll(){document.querySelectorAll('#segments textarea').forEach(fit);}
 window.addEventListener('resize',fitAll);
+// Each word's time is stored, but edits change the text, so a word's place in the
+// text is matched by proportion. ponytail: drifts a few characters after heavy edits;
+// re-align on save if exact karaoke ever matters. Old transcripts without words spread evenly.
+function wordSpans(r,text){
+  let words=(r.words||[]).filter(w=>w.text.trim());
+  if(!words.length)words=[...text].map((c,i,all)=>({text:c,start:r.start+(r.end-r.start)*i/all.length,end:r.start+(r.end-r.start)*(i+1)/all.length}));
+  const total=words.reduce((n,w)=>n+w.text.trim().length,0);let seen=0;
+  return words.map(w=>{const from=Math.round(seen/total*text.length);seen+=w.text.trim().length;return {from,to:Math.round(seen/total*text.length),start:w.start,end:w.end};});
+}
+async function playFrom(r,input){
+  const audio=$('audio'),word=wordSpans(r,input.value).find(w=>input.selectionStart<w.to);
+  delete audio.dataset.end;audio.currentTime=word?word.start:r.start;await audio.play();
+}
+let followed=null;
 function showPlaying(){
   const audio=$('audio'),t=audio.currentTime,label=$('now-playing');
   const current=state.doc?.segments.find(x=>x.start<=t&&t<x.end);
-  document.querySelectorAll('.segment.now').forEach(n=>{if(n.dataset.id!==String(current?.id))n.classList.remove('now');});
+  document.querySelectorAll('.segment.now').forEach(n=>{if(n.dataset.id!==String(current?.id)){n.classList.remove('now');n.querySelector('.karaoke')?.replaceChildren();}});
   if(!current){label.hidden=true;return;}
   const row=document.querySelector(`.segment[data-id="${current.id}"]`);row?.classList.add('now');
   const text=current.edited_text??current.traditional_text;
+  const word=wordSpans(current,text).findLast(w=>w.start<=t);
+  if(word&&row)row.querySelector('.karaoke').replaceChildren(text.slice(0,word.from),el('mark',text.slice(word.from,word.to)),text.slice(word.to));
+  // Follow along while listening, but never pull the page away from a segment being typed in.
+  if(followed!==current.id&&!audio.paused&&row&&!row.hidden){followed=current.id;const typing=document.activeElement?.closest?.('.segment');if(!typing||typing===row)row.scrollIntoView({block:'nearest',behavior:'smooth'});}
   label.textContent=`${audio.paused?'⏸ 停在':'▶ 正在聽'} ${time(current.start)} · ${text.length>24?text.slice(0,24)+'…':text}`;
   label.dataset.id=current.id;label.hidden=false;
 }
 $('audio').ontimeupdate=()=>{const audio=$('audio');if(audio.dataset.end&&audio.currentTime>=Number(audio.dataset.end)){audio.pause();delete audio.dataset.end;}showPlaying();};
-$('audio').onpause=showPlaying;$('audio').onplay=showPlaying;
+function follow(){showPlaying();if(!$('audio').paused)requestAnimationFrame(follow);}
+$('audio').onpause=showPlaying;$('audio').onplay=follow;
+function setSpeed(value){const audio=$('audio');audio.defaultPlaybackRate=audio.playbackRate=Number(value)||1;$('speed').value=String(audio.playbackRate);try{localStorage.setItem('iht-speed',$('speed').value);}catch{}}
+$('speed').onchange=()=>setSpeed($('speed').value);
+try{setSpeed(localStorage.getItem('iht-speed')||1);}catch{setSpeed(1);}
+// Review shortcuts. Option/Command combinations only, so plain typing and the Chinese input method are untouched.
+document.addEventListener('keydown',event=>{
+  if(event.isComposing||$('editor').hidden||document.querySelector('dialog[open]'))return;
+  const audio=$('audio'),row=document.activeElement?.closest?.('.segment'),mod=event.metaKey||event.ctrlKey;
+  const segment=row&&state.doc.segments.find(x=>String(x.id)===row.dataset.id);
+  const rows=()=>[...document.querySelectorAll('.segment:not([hidden])')];
+  let handled=true;
+  if(event.key==='Escape'&&!event.defaultPrevented&&!selectionMode&&event.target!==$('find')){if(audio.paused)protect(()=>audio.play())();else audio.pause();}
+  else if(mod&&event.key.toLowerCase()==='s')protect(save)();
+  else if(mod&&event.key==='Enter'&&row){const check=row.querySelector('.check input');if(!check.checked){check.checked=true;check.onchange();}
+    const all=rows(),next=all.slice(all.indexOf(row)+1).find(n=>n.dataset.pending==='true')||all[all.indexOf(row)+1];next?.querySelector('textarea').focus();}
+  else if(event.altKey&&event.key==='Enter'&&segment)protect(()=>playFrom(segment,row.querySelector('textarea')))();
+  else if(event.altKey&&(event.key==='ArrowDown'||event.key==='ArrowUp')&&row){const all=rows();all[all.indexOf(row)+(event.key==='ArrowDown'?1:-1)]?.querySelector('textarea').focus();}
+  else if(event.altKey&&(event.code==='Comma'||event.code==='Period'))audio.currentTime=Math.max(0,audio.currentTime+(event.code==='Comma'?-3:3));
+  else handled=false;
+  if(handled)event.preventDefault();
+});
 $('now-playing').onclick=()=>document.querySelector(`.segment[data-id="${$('now-playing').dataset.id}"] textarea`)?.focus();
 $('new-recording').onclick=()=>{const open=$('new-recording').closest('.intake').classList.toggle('intake-open');$('new-recording').setAttribute('aria-expanded',String(open));};
 $('toggle-jobs').onclick=()=>{const open=$('toggle-jobs').closest('.intake').classList.toggle('jobs-open');$('toggle-jobs').setAttribute('aria-expanded',String(open));};

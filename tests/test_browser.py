@@ -388,3 +388,22 @@ def test_playback_marks_current_segment(review_page):
     expect(page.locator('.segment.now')).to_have_count(1)
     expect(page.locator('.segment').first).to_have_class('segment now')
     expect(page.locator('#now-playing')).to_contain_text('00:00')
+
+
+def test_review_word_playback_search_and_shortcuts(review_page):
+    page = review_page
+    first = page.locator('#segments textarea').first
+    first.click(modifiers=['Alt'])  # Option-click plays from that word
+    page.keyboard.press('Escape')   # Esc pauses
+    assert page.evaluate("document.getElementById('audio').paused")
+    expect(page.locator('.segment.now .karaoke mark')).to_have_count(1)
+    page.locator('#find').fill('你好')
+    expect(page.locator('.segment:not([hidden])')).to_have_count(1)
+    expect(page.locator('#find-count')).to_have_text('符合 1 段')
+    page.locator('#find').fill('')
+    first.focus()
+    page.keyboard.press('Control+Enter')  # confirm and move on
+    expect(page.locator('.segment').first).to_have_attribute('data-pending', 'false')
+    assert page.evaluate("document.activeElement.closest('.segment').dataset.id") == '1'
+    page.keyboard.press('Control+s')
+    expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
