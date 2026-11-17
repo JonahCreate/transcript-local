@@ -38,15 +38,21 @@ def test_browser_three_edits_exports_and_reload(review_page,store,browser_job,tm
         page.locator('#segments textarea').first.fill(f'第{revision}版最新內容')
         page.locator('#save').click()
         expect(page.locator('#save-state')).to_have_text(f'已儲存第 {revision} 版')
+    atomic_json(store.root/'export-folder.json', {'path': str(tmp_path)})
+    page.reload()
+    expect(page.locator('#export-version')).to_have_text(str(tmp_path))
     for fmt in ('md','txt','srt','json'):
-        with page.expect_download() as pending:
-            page.locator('#exports').get_by_text(fmt.upper(),exact=True).click()
-        download=pending.value
-        assert '第4版' in download.suggested_filename
-        path=tmp_path/download.suggested_filename;download.save_as(path)
-        text=path.read_text()
-        assert '第4版最新內容' in text
-        assert '第3版最新內容' not in text
+        if fmt=='md':
+            page.locator('#export-md').click()
+        else:
+            page.locator('#export-formats').press('Enter')
+            page.locator(f'#export-format-options [data-format="{fmt}"]').click()
+        expect(page.locator('#export-dialog-status')).to_have_text('已匯出 1 份。')
+        path, = tmp_path.glob(f'*.{fmt}')
+        assert '第4版' in path.name
+        assert '第4版最新內容' in path.read_text()
+        assert '第3版最新內容' not in path.read_text()
+        page.locator('#export-dialog-close').click()
     page.reload()
     expect(page.locator('#segments textarea').first).to_have_value('第4版最新內容')
     if os.environ.get('IHT_SCREENSHOT'):
@@ -247,9 +253,10 @@ def test_browser_review_marker_filters_plays_and_saves(review_page):
 
 
 def test_browser_batch_select_and_export(review_page, store, browser_job, wav, document, tmp_path):
-    from zipfile import ZipFile
-
+    atomic_json(store.root/'export-folder.json', {'path': str(tmp_path)})
     page = review_page
+    page.reload()
+    expect(page.locator('#export-version')).to_have_text(str(tmp_path))
     original_name = browser_job['name']
     for name, created in [(original_name, '2000-01-03'), ('中間.wav', '2000-01-02'), ('最後.wav', '2000-01-01')]:
         job = make_browser_job(store, wav, document, name, created)
@@ -273,39 +280,70 @@ def test_browser_batch_select_and_export(review_page, store, browser_job, wav, d
     expect(page.locator('#recording-name')).to_have_text(original_name)
 
     page.locator('#segments textarea').first.fill('批次匯出最新校稿')
+    expect(page.locator('#batch-md')).to_have_text('儲存並匯出 Markdown')
     page.locator('#batch-md').click()
-    expect(page.locator('#toast')).to_contain_text('請先儲存')
-    expect(page.locator('#selection-count')).to_have_text('已選 3 份')
-    page.locator('#save').click()
+    page.locator('#export-dialog-run').click()
+    expect(page.locator('#export-dialog-status')).to_have_text('已匯出 3 份。')
+    page.locator('#export-dialog-close').click()
     expect(page.locator('#save-state')).to_have_text('已儲存第 2 版')
 
-    def read_archive(action, suffix):
-        with page.expect_download() as pending_download:
-            action()
-        result = pending_download.value
-        assert result.suggested_filename.endswith('.zip')
-        target = tmp_path / ('batch-' + suffix + '.zip')
-        result.save_as(target)
-        with ZipFile(target) as bundle:
-            entries = bundle.namelist()
-            assert len(set(entries)) == 3
-            assert all(name.endswith('.' + suffix) for name in entries)
-            assert sum(original_name.rsplit('.', 1)[0] in name for name in entries) == 2
-            assert any('批次匯出最新校稿' in bundle.read(name).decode() for name in entries)
+    def check_files(suffix):
+        entries = list(tmp_path.glob(f'*.{suffix}'))
+        assert len(entries) == 3
+        assert sum(original_name.rsplit('.', 1)[0] in path.name for path in entries) == 2
+        assert any('批次匯出最新校稿' in path.read_text() for path in entries)
 
-    read_archive(lambda: page.locator('#batch-md').click(), 'md')
+    check_files('md')
     page.locator('#batch-formats').hover()
     expect(page.get_by_role('button', name='TXT', exact=True)).to_be_visible()
     page.locator('#selection-count').hover()
     expect(page.locator('#batch-format-options')).to_be_hidden()
-    page.locator('#batch-formats').focus()
-    page.keyboard.press('Enter')
+    page.locator('#batch-formats').press('Enter')
     expect(page.get_by_role('button', name='MD', exact=True)).to_be_focused()
-    read_archive(lambda: page.get_by_role('button', name='SRT', exact=True).click(), 'srt')
+    page.locator('#batch-format-options [data-format=srt]').click()
+    expect(page.locator('#export-dialog-status')).to_have_text('已匯出 3 份。')
+    check_files('srt')
+    assert not list(tmp_path.glob('*.zip'))
+    page.locator('#export-dialog-close').click()
     page.keyboard.press('Escape')
     expect(boxes).to_have_count(0)
-    page.get_by_role('button', name='選擇', exact=True).click()
-    boxes.first.click()
-    with page.expect_download() as single:
-        page.locator('#batch-md').click()
-    assert single.value.suggested_filename.endswith('.md')
+
+
+def test_export_bar_stays_visible_at_half_width(review_page, store, browser_job):
+    page = review_page
+    page.set_viewport_size({'width': 700, 'height': 700})
+    path = store.job_dir(browser_job['id'])/'transcript.json'
+    transcript = read_json(path)
+    transcript['segments'] = [{**transcript['segments'][0], 'id': index} for index in range(30)]
+    atomic_json(path, transcript)
+    page.reload()
+    last = page.locator('#segments textarea').last
+    expect(last).to_be_visible()
+    page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+    bar = page.locator('.export-bar').bounding_box()
+    assert bar['y'] + bar['height'] == pytest.approx(700, abs=1)
+    area = last.bounding_box()
+    assert area['y'] >= 0 and area['y'] + area['height'] <= bar['y']
+
+
+def test_export_cancel_and_save_conflict_preserve_edits(review_page, store, tmp_path):
+    page = review_page
+    page.route('**/api/export-folder/choose', lambda route: route.fulfill(body='null', content_type='application/json'))
+    with page.expect_response('**/api/export-folder/choose'):
+        page.locator('#export-md').click()
+    expect(page.locator('#export-dialog')).to_be_hidden()
+    page.unroute('**/api/export-folder/choose')
+    atomic_json(store.root/'export-folder.json', {'path': str(tmp_path)})
+    page.reload()
+    expect(page.locator('#export-version')).to_have_text(str(tmp_path))
+    page.locator('#segments textarea').first.fill('需要保留的校稿')
+    page.route('**/api/jobs/*/transcript', lambda route: (
+        route.fulfill(status=409, body='稿件已由其他視窗更新')
+        if route.request.method=='PUT' else route.continue_()
+    ))
+    page.locator('#export-md').click()
+    page.locator('#export-dialog-run').click()
+    expect(page.locator('#export-dialog-status')).to_have_text('稿件已由其他視窗更新')
+    assert not list(tmp_path.glob('*.md'))
+    page.locator('#export-dialog-close').click()
+    expect(page.locator('#segments textarea').first).to_have_value('需要保留的校稿')

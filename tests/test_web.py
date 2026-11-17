@@ -155,3 +155,50 @@ def test_no_update_is_noop_even_with_queued_job(client,store,wav,monkeypatch):
     assert store.get(job['id'])['status']=='queued'
     assert not (store.root/'runtime/update-request.json').exists()
     assert client.put('/api/glossary',json={'prompts':[],'rules':[]}).status_code==200
+
+
+def test_export_folder_selection_persistence_and_retry(client, store, wav, document, tmp_path, monkeypatch):
+    from transcript_local import web
+
+    folders = [None, tmp_path/'default', tmp_path/'temporary']
+    for folder in folders[1:]:
+        folder.mkdir()
+    choices = iter(folders)
+    monkeypatch.setattr(web, 'choose_export_folder', lambda: next(choices))
+    assert client.post('/api/export-folder/choose').json() is None
+    selected = client.post('/api/export-folder/choose').json()
+    assert client.put('/api/export-folder', json=selected).status_code == 200
+    temporary = client.post('/api/export-folder/choose').json()
+    with TestClient(create_app(store, token='test-token', manager=IdleManager(store))) as reopened:
+        assert reopened.get('/api/export-folder', headers=client.headers).json()['path'] == str(folders[1])
+    manager = Manager(store)
+    ids = []
+    for _ in range(2):
+        job = manager.import_file(wav, model='small', force=True)
+        job['status'] = 'complete'
+        store.save(job)
+        atomic_json(store.job_dir(job['id'])/'transcript.json', document)
+        ids.append(job['id'])
+    payload = {'ids': ids, 'format': 'md', 'destination': temporary['destination']}
+    writer = web.write_export
+
+    def fail_second(folder, filename, content):
+        if list(folder.iterdir()):
+            raise PermissionError('test unwritable')
+        return writer(folder, filename, content)
+
+    monkeypatch.setattr(web, 'write_export', fail_second)
+    result = client.post('/api/jobs/export-to-folder', json=payload).json()
+    assert len(result['saved']) == 1
+    assert result['failed'][0]['id'] == ids[1]
+    assert '權限' in result['failed'][0]['reason']
+    monkeypatch.setattr(web, 'write_export', writer)
+    result = client.post('/api/jobs/export-to-folder', json={**payload, 'ids': [ids[1]]}).json()
+    assert len(result['saved']) == 1 and not result['failed']
+    assert len(list(folders[2].glob('*.md'))) == 2
+    assert not list(folders[1].iterdir())
+    conflict = client.post('/api/jobs/export-to-folder', json={**payload, 'ids': [ids[0]], 'revisions': {ids[0]: 99}}).json()
+    assert not conflict['saved'] and '版本' in conflict['failed'][0]['reason']
+    folders[2].rename(tmp_path/'moved')
+    assert client.post('/api/jobs/export-to-folder', json=payload).status_code == 409
+    assert client.post('/api/jobs/export-to-folder', json={**payload, 'destination': '/tmp/unapproved'}).status_code == 409

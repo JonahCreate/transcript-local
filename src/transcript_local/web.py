@@ -7,9 +7,7 @@ from pathlib import Path
 import secrets
 import shutil
 import threading
-import tempfile
-from zipfile import ZIP_DEFLATED, ZipFile
-from starlette.background import BackgroundTask
+import subprocess
 from typing import Literal
 from urllib.parse import quote
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Depends
@@ -26,9 +24,51 @@ from .review import FORMAT_NAMES, export, preview, save_edits
 
 ExportFormat = Literal['md','txt','srt','json']
 
-class BatchExport(BaseModel):
+class FolderExport(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=1000)
     format: ExportFormat = 'md'
+
+    destination: str = Field(max_length=100)
+    revisions: dict[str, int] = Field(default_factory=dict, max_length=1000)
+
+
+class ExportDestination(BaseModel):
+    destination: str = Field(max_length=100)
+
+
+def choose_export_folder():
+    script = """
+    try
+        return POSIX path of (choose folder with prompt "選擇逐字稿匯出資料夾")
+    on error errorText number errorNumber
+        if errorNumber is -128 then return ""
+        error errorText number errorNumber
+    end try
+    """
+    result = subprocess.run(['/usr/bin/osascript', '-e', script], capture_output=True,
+                            text=True, check=True, timeout=300)
+    return result.stdout.rstrip('\r\n') or None
+
+
+def write_export(folder, filename, content):
+    stem, suffix = os.path.splitext(filename)
+    number = 1
+    while True:
+        name = filename if number == 1 else f'{stem} ({number}){suffix}'
+        target = folder / name
+        try:
+            stream = target.open('x', encoding='utf-8')
+        except FileExistsError:
+            number += 1
+            continue
+        try:
+            with stream:
+                stream.write(content)
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
+        return name
+
 
 class ModelChoice(BaseModel):
     name: Literal['medium','small','qwen3']
@@ -281,7 +321,8 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
         return FileResponse(path,media_type='audio/wav')
 
     def export_filename(current_job, current_doc, fmt):
-        source_name = Path(current_job['name']).stem.replace(':', '：')[:60].rstrip(' .')
+        source_name = Path(current_job['name']).stem.replace(':', '：')
+        source_name = source_name.encode()[:180].decode('utf-8', errors='ignore').rstrip(' .')
         return f'{source_name}－第{current_doc["revision"]}版－{FORMAT_NAMES[fmt]}'
 
     @app.get('/api/jobs/{job_id}/export/{fmt}',dependencies=[Depends(auth)])
@@ -295,29 +336,80 @@ def create_app(store=None, token=None, manager=None, restart=None, on_ready=None
                         media_type='application/json' if fmt=='json' else 'text/plain; charset=utf-8',
                         headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(filename)})
 
-    @app.post('/api/jobs/batch-export', dependencies=[Depends(auth)])
-    def batch_export(payload: BatchExport):
-        ids = list(dict.fromkeys(payload.ids))
-        for job_id in ids:
-            if job(job_id)['status'] != 'complete':
-                raise ValueError('只能匯出已完成的任務。')
-        if len(ids) == 1:
-            return download_export(ids[0], payload.format)
+    export_settings = store.root / 'export-folder.json'
+    export_choices = {}
+    picker_lock = threading.Lock()
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temporary:
-            archive = Path(temporary.name)
+    def export_destination(key):
+        path = export_choices.get(key)
+        if not path or not Path(path).is_dir():
+            raise HTTPException(409, '匯出資料夾已無法使用，請更改位置。')
+        return Path(path)
+
+    def folder_choice(path, *, remembered=False):
+        key = secrets.token_urlsafe(24)
+        if len(export_choices) >= 256:
+            export_choices.pop(next(iter(export_choices)), None)
+        export_choices[key] = path
+        return {'destination': key, 'path': path, 'remembered': remembered}
+
+    @app.get('/api/export-folder', dependencies=[Depends(auth)])
+    def default_export_folder():
+        path = read_json(export_settings, {}).get('path')
+        return folder_choice(path, remembered=True) if path else None
+
+    @app.post('/api/export-folder/choose', dependencies=[Depends(auth)])
+    def pick_export_folder():
+        if not picker_lock.acquire(blocking=False):
+            raise HTTPException(409, '資料夾選擇視窗已經開啟。')
         try:
-            with ZipFile(archive, 'w', ZIP_DEFLATED) as bundle:
-                for index, job_id in enumerate(ids, 1):
-                    current_job = job(job_id)
-                    current_doc = doc(job_id)
-                    filename = export_filename(current_job, current_doc, payload.format)
-                    bundle.writestr(f'{index:03d}－{filename}', export(current_job, current_doc, payload.format))
-            return FileResponse(archive, media_type='application/zip', filename='逐字稿.zip',
-                                background=BackgroundTask(archive.unlink, missing_ok=True))
-        except BaseException:
-            archive.unlink(missing_ok=True)
-            raise
+            path = choose_export_folder()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(503, '無法開啟 macOS 資料夾選擇視窗。') from exc
+        finally:
+            picker_lock.release()
+        if path is None:
+            return None
+        return folder_choice(path)
+
+    @app.put('/api/export-folder', dependencies=[Depends(auth)])
+    def remember_export_folder(payload: ExportDestination):
+        folder = export_destination(payload.destination)
+        atomic_json(export_settings, {'path': str(folder)})
+        return {**payload.model_dump(), 'path': str(folder), 'remembered': True}
+
+    @app.post('/api/export-folder/open', dependencies=[Depends(auth)])
+    def open_export_folder(payload: ExportDestination):
+        folder = export_destination(payload.destination)
+        try:
+            subprocess.run(['/usr/bin/open', str(folder)], check=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(503, '無法在 Finder 開啟匯出資料夾。') from exc
+        return {'opened': True}
+
+    @app.post('/api/jobs/export-to-folder', dependencies=[Depends(auth)])
+    def export_to_folder(payload: FolderExport):
+        folder = export_destination(payload.destination)
+        saved, failed = [], []
+        for job_id in dict.fromkeys(payload.ids):
+            name = job_id
+            try:
+                current_job = job(job_id)
+                name = current_job['name']
+                if current_job['status'] != 'complete':
+                    raise HTTPException(409, '任務尚未完成。')
+                current_doc = doc(job_id)
+                expected = payload.revisions.get(job_id)
+                if expected is not None and expected != current_doc['revision']:
+                    raise HTTPException(409, '稿件版本已變更，請重新載入後匯出。')
+                filename = export_filename(current_job, current_doc, payload.format)
+                saved.append(write_export(folder, filename, export(current_job, current_doc, payload.format)))
+            except HTTPException as exc:
+                failed.append({'id': job_id, 'name': name, 'reason': exc.detail})
+            except OSError as exc:
+                reason = '磁碟空間不足，請釋放空間或更改位置。' if exc.errno == 28 else '無法寫入，請檢查權限或更改位置。'
+                failed.append({'id': job_id, 'name': name, 'reason': reason})
+        return {'saved': saved, 'failed': failed, 'path': str(folder)}
 
     @app.get('/api/glossary',dependencies=[Depends(auth)])
     def glossary():return store.glossary()

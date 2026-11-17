@@ -26,3 +26,34 @@
 }
 .selectable-job { cursor: pointer; }
 .selectable-job input { margin-inline-end: .5rem; }
+
+#editor:not([hidden]) { padding-bottom: var(--export-height, 7rem); }
+.export-bar {
+  position: fixed;
+  z-index: 4;
+  inset: auto 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem 1rem;
+  margin: 0;
+  padding: .75rem max(1rem, env(safe-area-inset-right)) max(.75rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  background: Canvas;
+  color: CanvasText;
+  box-shadow: 0 -.25rem 1rem #0001;
+}
+.export-bar > div:first-child { min-width: 0; }
+#export-version, #batch-destination, #export-dialog-path { overflow-wrap: anywhere; }
+.export-actions, .single-export-menu { display: flex; flex-wrap: wrap; gap: .4rem; }
+.single-export-menu { position: relative; }
+#export-format-options {
+  position: absolute;
+  inset: auto 0 100% auto;
+  display: grid;
+  min-width: 7rem;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid currentColor;
+  border-radius: .5rem;
+}
+#export-format-options[hidden] { display: none; }

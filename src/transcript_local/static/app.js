@@ -112,6 +112,7 @@ const selectedJobs=new Set();
 
 function updateSelection(){
   $('batch-actions').hidden=!selectionMode;
+  $('batch-md').textContent=state.dirty&&selectedJobs.has(state.current)?'儲存並匯出 Markdown':'匯出 Markdown';
   $('selection-count').textContent=`已選 ${selectedJobs.size} 份`;
   const disabled=exportingBatch||!selectedJobs.size;
   $('batch-md').disabled=disabled;
@@ -159,7 +160,7 @@ $('batch-formats').onclick=event=>{
   if(open&&keyboard)$('batch-format-options').querySelector('button').focus();
 };
 $('batch-download').onpointerleave=()=>{
-  if(!$('batch-download').contains(document.activeElement))showBatchFormats(false);
+  if(!$('batch-format-options').contains(document.activeElement))showBatchFormats(false);
 };
 $('batch-download').onfocusout=event=>{
   if(!$('batch-download').contains(event.relatedTarget))showBatchFormats(false);
@@ -171,21 +172,8 @@ document.addEventListener('keydown',event=>{
   }
 });
 async function downloadBatch(format){
-  if(exportingBatch||!selectedJobs.size)return;
-  if((state.dirty||state.saving)&&selectedJobs.has(state.current)){
-    notify('請先儲存目前稿件的修改，再下載。');
-    return;
-  }
   const ids=state.jobs.filter(job=>selectedJobs.has(job.id)).map(job=>job.id);
-  exportingBatch=true;
-  updateSelection();
-  try{
-    const response=await apiResponse('/jobs/batch-export',{method:'POST',body:{ids,format}});
-    await saveDownload(response,ids.length===1?`逐字稿.${format}`:'逐字稿.zip');
-  }finally{
-    exportingBatch=false;
-    updateSelection();
-  }
+  if(ids.length)await beginExport(ids,format);
 }
 $('batch-md').onclick=protect(()=>downloadBatch('md'));
 for(const button of $('batch-format-options').querySelectorAll('button')){
@@ -205,7 +193,7 @@ function scheduleCompleted(){
   pendingCompletions=[];
   protect(()=>openJob(job,0,0,true))();
 }
-function markDirty(id){if(id!==undefined)state.changed.add(id);clearTimeout(draftTimer);draftTimer=setTimeout(()=>protect(flushDraft)(),1000);state.dirty=true;$('save').disabled=false;$('save-state').textContent='尚未儲存';$('export-version').textContent='有未儲存修改；儲存後才能下載最新版。';}
+function markDirty(id){if(id!==undefined)state.changed.add(id);clearTimeout(draftTimer);draftTimer=setTimeout(()=>protect(flushDraft)(),1000);state.dirty=true;renderExports();$('save').disabled=false;$('save-state').textContent='尚未儲存';}
 async function openJob(j,position=0,segmentPosition=0,automatic=false){
   if(state.saving||(state.opening&&(automatic||!openingAutomatic))){if(!automatic)notify('正在儲存或載入，請稍候。');return;}
   if(automatic&&(state.current||state.dirty))return;
@@ -217,7 +205,7 @@ async function openJob(j,position=0,segmentPosition=0,automatic=false){
   state.current=j.id;state.doc=doc;state.dirty=false;state.changed.clear();state.recoveredDraftIds.clear();
   await api('/preferences',{method:'PUT',body:{job_id:j.id,position,segment_position:segmentPosition}});
   if(request!==openRequest)return;
-  $('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名會包含錄音名稱與版本。`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
+  $('recording-name').textContent=j.name;$('save-state').textContent=`已載入第 ${doc.revision} 版`;$('save').disabled=true;$('audio').src=`/api/jobs/${j.id}/audio`;
   renderSegments();renderExports();await loadDrafts();await refreshJobs();$('editor-empty').hidden=true;$('editor').hidden=false;window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
   }finally{if(request===openRequest){state.opening=false;openingAutomatic=false;scheduleCompleted();}}
 }
@@ -252,7 +240,7 @@ async function save(){
     const doc=await api(`/jobs/${state.current}/transcript`,{method:'PUT',body:{revision:state.doc.revision,segments:state.doc.segments.map(r=>({id:r.id,text:r.edited_text??r.traditional_text,reviewed:r.reviewed}))}});
     state.doc=doc;state.dirty=false;state.changed.clear();
     const position=window.scrollY,segmentPosition=$('segments').scrollTop;renderSegments();renderExports();window.scrollTo(0,position);$('segments').scrollTop=segmentPosition;
-    $('save-state').textContent=`已儲存第 ${doc.revision} 版`;$('export-version').textContent=`下載第 ${doc.revision} 版；檔名包含錄音名稱與版本。`;
+    $('save-state').textContent=`已儲存第 ${doc.revision} 版`;
     notify(`第 ${doc.revision} 版已儲存在本機。`);
     for(const id of new Set([windowId,...state.recoveredDraftIds])) {
       try {await api(`/jobs/${state.current}/drafts/${id}`,{method:'DELETE'});} catch {notify('正式稿已儲存；舊草稿稍後可手動清除。');}
@@ -277,7 +265,7 @@ $('close-preview').onclick=()=>$('preview-dialog').close();
 $('apply-preview').onclick=protect(async()=>{
   const ids=Array.from($('preview-list').querySelectorAll('input:checked')).map(n=>Number(n.dataset.id));
   if(!ids.length){notify('請至少勾選一個片段。');return;}
-  state.doc=await api(`/jobs/${state.current}/apply`,{method:'POST',body:{revision:state.preview.revision,glossary_hash:state.preview.glossary_hash,ids}});$('preview-dialog').close();renderSegments();renderExports();$('save-state').textContent=`已儲存第 ${state.doc.revision} 版`;$('export-version').textContent=`下載第 ${state.doc.revision} 版；檔名會包含錄音名稱與版本。`;notify(`已修改 ${ids.length} 個片段，原始辨識保留。`);
+  state.doc=await api(`/jobs/${state.current}/apply`,{method:'POST',body:{revision:state.preview.revision,glossary_hash:state.preview.glossary_hash,ids}});$('preview-dialog').close();renderSegments();renderExports();$('save-state').textContent=`已儲存第 ${state.doc.revision} 版`;notify(`已修改 ${ids.length} 個片段，原始辨識保留。`);
 });
 window.addEventListener('beforeunload',e=>{if(state.dirty){const payload=draftPayload();if(payload)fetch(`/api/jobs/${state.current}/draft`,{method:'PUT',headers:{'Content-Type':'application/json','X-Local-Request':'1'},body:JSON.stringify(payload),keepalive:true}).catch(()=>{});e.preventDefault();e.returnValue='';}});
 async function init(){
@@ -288,6 +276,7 @@ async function init(){
   if(!state.status.models.some(m=>m.ready))changeView('setup');
   const prefs=await api('/preferences');const last=state.jobs.find(j=>j.id===prefs.job_id&&j.status==='complete');if(last)await openJob(last,prefs.position||0,prefs.segment_position||0);
   jobsInitialized=true;await refreshJobs();
+  protect(loadExportFolder)();
   state.checking=true;api('/update/check',{method:'POST'}).then(result=>{state.checking=false;renderUpdate(result);}).catch(()=>{state.checking=false;});
 }
 protect(init)();
@@ -371,27 +360,197 @@ function previewDraft(draft){
   $('draft-dialog').showModal();
 }
 $('close-draft').onclick=()=>$('draft-dialog').close();
-async function saveDownload(response, fallbackName){
-  const url=URL.createObjectURL(await response.blob());
-  const download=el('a');
-  download.href=url;
-  download.download=decodeURIComponent((response.headers.get('Content-Disposition')||'').split("UTF-8''")[1]||fallbackName);
-  document.body.append(download);
-  download.click();
-  download.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),30000);
-}
+let exportFolder=null;
+let defaultExportFolder=null;
+let folderLoaded=false;
+let pendingExport=null;
+let exportBusy=false;
+let canOpenExportFolder=false;
+let replaceExportFolder=false;
+let exportDialogUsedForFiles=false;
+const exportDialog=$('export-dialog');
+
 function renderExports(){
-  $('exports').replaceChildren(...['md','txt','srt','json'].map(fmt=>{
-    const link=el('a',fmt.toUpperCase());link.href=`/api/jobs/${state.current}/export/${fmt}?revision=${state.doc.revision}`;
-    link.onclick=protect(async event=>{
-      event.preventDefault();if(state.dirty){notify('請先儲存修改，再匯出。');return;}
-      const response=await fetch(link.href,{cache:'no-store'});
-      if(!response.ok)throw new Error('匯出失敗或版本已變更，請保留草稿並重新載入。');
-      await saveDownload(response,`逐字稿.${fmt}`);
-    });return link;
-  }));
+  $('export-md').textContent=state.dirty?'儲存並匯出 Markdown':'匯出 Markdown';
+  const location=exportFolder?.path||'首次匯出時選擇位置';
+  $('export-version').textContent=location;
+  $('export-version').textContent=location;
+  $('batch-destination').textContent=location;
+  updateSelection();
 }
+function showExportDialog(){
+  if(!exportDialog.open)exportDialog.showModal();
+  renderExportDialog();
+}
+function renderExportDialog(){
+  $('export-dialog-path').textContent=exportFolder?.path||'尚未選擇位置';
+  $('remember-folder-label').hidden=!exportFolder||exportFolder.remembered;
+  $('export-dialog-run').hidden=!pendingExport||!exportFolder||replaceExportFolder;
+  $('export-dialog-run').textContent=pendingExport?.retry?'重試失敗項目':
+    state.dirty&&pendingExport?.ids.includes(state.current)?'儲存並匯出':'匯出';
+  $('export-open-finder').hidden=!canOpenExportFolder;
+  for(const id of ['export-dialog-change','export-dialog-run','export-dialog-close','export-open-finder']){
+    $(id).disabled=exportBusy;
+  }
+}
+async function loadExportFolder(){
+  if(!folderLoaded){
+    defaultExportFolder=await api('/export-folder');
+    exportFolder=defaultExportFolder;
+    folderLoaded=true;
+    renderExports();
+  }
+}
+async function chooseFolder({first=false}={}){
+  if(exportBusy)return;
+  exportBusy=true;
+  renderExportDialog();
+  try{
+    const chosen=await api('/export-folder/choose',{method:'POST'});
+    if(chosen){
+      exportFolder=chosen;
+      replaceExportFolder=false;
+      canOpenExportFolder=false;
+      $('remember-folder').checked=false;
+      $('export-dialog-status').textContent='';
+      renderExports();
+    }else if(first){
+      pendingExport=null;
+      exportDialog.close();
+    }
+  }catch(error){
+    $('export-dialog-status').textContent=error.message;
+  }finally{
+    exportBusy=false;
+    renderExportDialog();
+  }
+}
+async function beginExport(ids,format){
+  if(exportBusy||exportDialog.open)return;
+  await loadExportFolder();
+  exportDialogUsedForFiles=true;
+  pendingExport={ids,format,retry:false};
+  canOpenExportFolder=false;
+  replaceExportFolder=false;
+  $('export-failures').replaceChildren();
+  $('export-dialog-status').textContent='';
+  showExportDialog();
+  if(exportFolder){
+    if(!state.dirty||!ids.includes(state.current))await exportFiles();
+  }else await chooseFolder({first:true});
+}
+async function exportFiles(){
+  if(exportBusy||!pendingExport||!exportFolder)return;
+  const {ids,format}=pendingExport;
+  exportBusy=true;
+  exportingBatch=true;
+  updateSelection();
+  renderExportDialog();
+  $('export-dialog-status').textContent='正在匯出…';
+  try{
+    const revisions={};
+    if(ids.includes(state.current)){
+      if(state.saving)throw new Error('正在儲存，請稍後重試。');
+      if(state.dirty)await save();
+      revisions[state.current]=state.doc.revision;
+    }
+    if($('remember-folder').checked&&!exportFolder.remembered){
+      exportFolder=await api('/export-folder',{method:'PUT',body:{destination:exportFolder.destination}});
+      defaultExportFolder=exportFolder;
+      $('remember-folder').checked=false;
+    }
+    const result=await api('/jobs/export-to-folder',{method:'POST',body:{
+      ids,format,revisions,destination:exportFolder.destination
+    }});
+    canOpenExportFolder=canOpenExportFolder||result.saved.length>0;
+    const failed=result.failed;
+    $('export-failures').replaceChildren(...failed.map(item=>el('li',item.name+' — '+item.reason)));
+    $('export-dialog-status').textContent=`已匯出 ${result.saved.length} 份${failed.length?'，'+failed.length+' 份失敗':''}。`;
+    pendingExport=failed.length?{ids:failed.map(item=>item.id),format,retry:true}:null;
+  }catch(error){
+    $('export-dialog-status').textContent=error.message;
+    replaceExportFolder=error.message.includes('匯出資料夾已無法使用');
+  }finally{
+    exportBusy=false;
+    exportingBatch=false;
+    renderExports();
+    renderExportDialog();
+  }
+}
+exportDialog.addEventListener('close',()=>{
+  if(exportDialogUsedForFiles)exportFolder=defaultExportFolder;
+  exportDialogUsedForFiles=false;
+  pendingExport=null;
+  $('remember-folder').checked=false;
+  renderExports();
+});
+exportDialog.addEventListener('cancel',event=>{if(exportBusy)event.preventDefault();});
+$('export-dialog-close').onclick=()=>exportDialog.close();
+$('export-dialog-run').onclick=protect(exportFiles);
+$('export-dialog-change').onclick=()=>chooseFolder();
+$('export-open-finder').onclick=protect(()=>api('/export-folder/open',{
+  method:'POST',body:{destination:exportFolder.destination}
+}));
+async function changeExportFolder(){
+  if(exportBusy||exportDialog.open)return;
+  await loadExportFolder();
+  exportDialogUsedForFiles=false;
+  pendingExport=null;
+  canOpenExportFolder=false;
+  replaceExportFolder=false;
+  $('export-failures').replaceChildren();
+  $('export-dialog-status').textContent='選擇下次匯出的位置。';
+  showExportDialog();
+  await chooseFolder({first:true});
+  if(exportDialog.open&&exportFolder&&!exportFolder.remembered){
+    $('remember-folder-label').hidden=false;
+  }
+}
+$('remember-folder').onchange=protect(async()=>{
+  if(pendingExport||!$('remember-folder').checked)return;
+  exportFolder=await api('/export-folder',{method:'PUT',body:{destination:exportFolder.destination}});
+  defaultExportFolder=exportFolder;
+  $('remember-folder').checked=false;
+  renderExports();
+  renderExportDialog();
+});
+$('change-export-folder').onclick=protect(changeExportFolder);
+$('batch-change-folder').onclick=protect(changeExportFolder);
+$('export-md').onclick=protect(()=>beginExport([state.current],'md'));
+const singleFormats=$('export-format-options');
+function showSingleFormats(open){
+  singleFormats.hidden=!open;
+  $('export-formats').setAttribute('aria-expanded',String(open));
+}
+$('export-formats').onpointerenter=()=>showSingleFormats(true);
+$('export-formats').onclick=event=>{
+  showSingleFormats(true);
+  if(!event.detail)singleFormats.querySelector('button').focus();
+};
+const singleMenu=$('export-formats').parentElement;
+singleMenu.onpointerleave=()=>{
+  if(!singleMenu.contains(document.activeElement))showSingleFormats(false);
+};
+singleMenu.onfocusout=event=>{
+  if(!singleMenu.contains(event.relatedTarget))showSingleFormats(false);
+};
+for(const button of singleFormats.querySelectorAll('button')){
+  button.onclick=protect(async()=>{
+    showSingleFormats(false);
+    await beginExport([state.current],button.dataset.format);
+  });
+}
+singleMenu.onkeydown=event=>{
+  if(event.key==='Escape'&&!singleFormats.hidden){
+    event.stopPropagation();
+    showSingleFormats(false);
+    $('export-formats').focus();
+  }
+};
+const exportBar=document.querySelector('.export-bar');
+new ResizeObserver(()=>{
+  document.documentElement.style.setProperty('--export-height',exportBar.offsetHeight+'px');
+}).observe(exportBar);
 function persistPosition(){
   clearTimeout(positionTimer);if(!state.current||state.stopped||state.updating)return;
   positionTimer=setTimeout(()=>protect(()=>api('/preferences',{method:'PUT',body:{job_id:state.current,position:window.scrollY,segment_position:$('segments').scrollTop}}))(),800);
